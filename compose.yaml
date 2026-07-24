@@ -1,0 +1,110 @@
+name: signalledger
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-signalledger}
+      POSTGRES_USER: ${POSTGRES_USER:-signalledger}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-signalledger}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    image: pgvector/pgvector:pg17
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-signalledger}
+      POSTGRES_USER: ${POSTGRES_USER:-signalledger}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-signalledger}
+    volumes:
+      - ./migrations:/migrations:ro
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        for migration in /migrations/*.up.sql; do
+          echo "applying $$migration"
+          psql -v ON_ERROR_STOP=1 -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -f "$$migration"
+        done
+    restart: "no"
+
+  quant:
+    build:
+      context: ./python
+    environment:
+      DOCUMENT_STORAGE_PATH: /var/lib/signalledger/documents
+      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-yfinance}
+      LLM_PROVIDER: ${LLM_PROVIDER:-disabled}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-claude-opus-4-8}
+    ports:
+      - "${QUANT_PORT:-8000}:8000"
+    volumes:
+      - documents-data:/var/lib/signalledger/documents:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      target: api
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      quant:
+        condition: service_healthy
+    environment:
+      HTTP_ADDR: :8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-signalledger}:${POSTGRES_PASSWORD:-signalledger}@postgres:5432/${POSTGRES_DB:-signalledger}?sslmode=disable
+      DOCUMENT_STORAGE_PATH: /var/lib/signalledger/documents
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-20971520}
+      QUANT_SERVICE_URL: http://quant:8000
+      WORKER_POLL_INTERVAL: 5s
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - documents-data:/var/lib/signalledger/documents
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      target: worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-signalledger}:${POSTGRES_PASSWORD:-signalledger}@postgres:5432/${POSTGRES_DB:-signalledger}?sslmode=disable
+      DOCUMENT_STORAGE_PATH: /var/lib/signalledger/documents
+      QUANT_SERVICE_URL: http://quant:8000
+      # LLM extraction of a long PDF can take minutes; the lease must outlast it.
+      QUANT_TIMEOUT: ${QUANT_TIMEOUT:-300s}
+      WORKER_POLL_INTERVAL: 5s
+      JOB_LEASE_DURATION: ${JOB_LEASE_DURATION:-10m}
+    volumes:
+      - documents-data:/var/lib/signalledger/documents
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  documents-data:

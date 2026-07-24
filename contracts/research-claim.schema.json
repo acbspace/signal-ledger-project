@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signalledger.local/contracts/research-claim.schema.json",
+  "title": "ResearchClaim",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "document_id",
+    "page_number",
+    "claim",
+    "evidence_quote",
+    "claim_kind",
+    "direction",
+    "confidence",
+    "effective_at"
+  ],
+  "properties": {
+    "document_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "page_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ticker": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z.]{1,10}$"
+    },
+    "claim": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "evidence_quote": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 3000
+    },
+    "claim_kind": {
+      "type": "string",
+      "enum": ["fundamental", "macro", "risk", "catalyst", "valuation"]
+    },
+    "direction": {
+      "type": "string",
+      "enum": ["positive", "negative", "neutral"]
+    },
+    "horizon_days": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 3650
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "effective_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

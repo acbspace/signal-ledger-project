@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://signalledger.local/contracts/strategy-spec.schema.json",
+  "title": "StrategySpec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug", "version", "name", "universe", "selection", "rebalance", "risk"],
+  "properties": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,63}$"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 120
+    },
+    "universe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "asset_class", "symbols"],
+      "properties": {
+        "name": { "type": "string" },
+        "asset_class": { "type": "string", "enum": ["equity", "etf"] },
+        "symbols": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Z.]{1,10}$" },
+          "minItems": 1
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template", "filters"],
+      "properties": {
+        "template": {
+          "type": "string",
+          "enum": ["research-supported-momentum", "quality-trend", "macro-theme-etf"]
+        },
+        "filters": {
+          "description": "Selection knobs the backtest engine reads. Unknown fields are rejected so a typo cannot commit an immutable version whose filter silently does nothing.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "operator", "value"],
+            "properties": {
+              "field": {
+                "type": "string",
+                "enum": [
+                  "lookback_months",
+                  "top_n",
+                  "momentum",
+                  "claim_confidence",
+                  "claim_signal_weight",
+                  "claim_horizon_days",
+                  "require_claim_support"
+                ]
+              },
+              "operator": { "type": "string", "enum": ["gt", "gte", "lt", "lte", "eq"] },
+              "value": { "type": ["number", "string", "boolean"] }
+            }
+          }
+        }
+      }
+    },
+    "rebalance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schedule"],
+      "properties": {
+        "schedule": { "type": "string", "enum": ["weekly", "monthly", "quarterly"] }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_position_weight", "transaction_cost_bps"],
+      "properties": {
+        "max_position_weight": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "transaction_cost_bps": { "type": "number", "minimum": 0, "maximum": 1000 },
+        "stop_loss_pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}

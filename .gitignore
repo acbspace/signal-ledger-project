@@ -1,0 +1,23 @@
+.env
+.data/
+bin/
+coverage/
+dist/
+tmp/
+*.log
+
+# Go
+*.test
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+python/.venv/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
