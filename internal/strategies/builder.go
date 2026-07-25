@@ -179,9 +179,15 @@ func defaultFilters(claims []domain.StoredClaim) []Filter {
 	}
 }
 
-// defaultSignalWeight mirrors _DEFAULT_SIGNAL_WEIGHT in the engine: a
-// full-confidence claim is worth ten points of trailing return.
-const defaultSignalWeight = 0.1
+// defaultSignalWeight mirrors the signal weight momentum-claims-v4 defaults to.
+// The engine ranks momentum cross-sectionally onto [-1, 1] before adding the
+// tilt, so this is the fraction of the whole momentum spread a full-confidence
+// claim is worth — not, as it read under v3, ten points of trailing return.
+//
+// The draft commits this as an explicit filter, which overrides the engine's own
+// default. Left at v3's 0.1 it committed a tilt that could not reorder anything:
+// adjacent names in a two-name universe sit a full 2.0 apart in rank space.
+const defaultSignalWeight = 0.25
 
 func defaultRisk() Risk {
 	return Risk{

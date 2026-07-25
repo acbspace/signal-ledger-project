@@ -66,7 +66,12 @@ class CandidatePosition(BaseModel):
     rank: int = Field(ge=1)
     weight: float
     score: float
+    # The raw trailing return, and the cross-sectional rank of it that the engine
+    # actually scored. Both are needed for `score` to be reproducible from a
+    # stored position; a field missing here is silently dropped from the response
+    # rather than erroring, and reaches Go as a zero.
     momentum: float
+    momentum_rank: float
     claim_support: float
     evidence: list[CandidateEvidence] = Field(default_factory=list)
 
