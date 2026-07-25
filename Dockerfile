@@ -1,4 +1,6 @@
-FROM golang:1.25-alpine AS build
+# Must stay at or above go.mod's toolchain floor: an older base would make the
+# build silently download a second toolchain, or fail outright without a network.
+FROM golang:1.26-alpine AS build
 
 WORKDIR /src
 

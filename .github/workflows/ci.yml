@@ -58,8 +58,11 @@ jobs:
       # off the same tag instead of off whatever the action resolved.
       - name: golangci-lint
         run: |
+          # The tag has to be built with a Go at least as new as go.mod's
+          # toolchain floor, or it refuses to load the config rather than
+          # linting: v2.6.1 ships go1.25 and cannot target 1.26.5.
           docker run --rm -v "$PWD:/src" -w /src \
-            golangci/golangci-lint:v2.6.1 golangci-lint run ./...
+            golangci/golangci-lint:v2.12.2 golangci-lint run ./...
 
   go-vuln:
     name: go — govulncheck

@@ -1,6 +1,11 @@
 module signalledger
 
-go 1.25.0
+// Pinned to the patch, not just the minor. CI installs exactly what this line
+// says (`setup-go` with `go-version-file`), so a bare `go 1.25` left it building
+// on the .0 release and govulncheck flagged 21 standard-library advisories that
+// no dependency of ours introduced. The patch level is a security floor: keep it
+// current rather than rounding it back down to a minor.
+go 1.26.5
 
 require github.com/jackc/pgx/v5 v5.10.0
 

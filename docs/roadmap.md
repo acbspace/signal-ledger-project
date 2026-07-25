@@ -31,9 +31,16 @@ gate, which is the argument for the gate.
 
 Still open in this area:
 
-- [ ] Pin base images by digest. `golang:1.25-alpine`, `alpine:3.21`, and
+- [ ] Pin base images by digest. `golang:1.26-alpine`, `alpine:3.21`, and
       `python:3.12-slim` still float, so the locked dependency set can be built
       against a different libc or OpenSSL than it was resolved on.
+- [ ] Keep the Go toolchain floor moving. `go.mod` pins a patch version because
+      CI installs exactly what that line says, and a bare minor left the build on
+      the `.0` release with 21 standard-library advisories against it. Nothing
+      raises that floor automatically — Dependabot updates modules, not the `go`
+      directive — so a stdlib CVE lands as a red `govulncheck` with no dependency
+      to blame. The `golangci-lint` tag has to move with it: an image built
+      against an older Go refuses to lint a newer target.
 - [ ] Enable `ruff format`. The codebase sits at ~100 columns and ruff would
       reformat nine files; that is a style decision to take deliberately rather
       than as a side effect of adding a linter, so only `ruff check` gates today.
