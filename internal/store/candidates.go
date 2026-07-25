@@ -31,7 +31,7 @@ func (store *Store) ListCandidates(ctx context.Context, filter domain.CandidateF
 		SELECT candidates.id::text, candidates.backtest_run_id::text, candidates.strategy_id::text,
 			strategies.slug, strategies.version, runs.engine_version, runs.result_checksum,
 			candidates.as_of, candidates.symbol, candidates.rank, candidates.weight,
-			candidates.score, candidates.momentum, candidates.claim_support
+			candidates.score, candidates.momentum, candidates.momentum_rank, candidates.claim_support
 		FROM portfolio_candidates AS candidates
 		JOIN selected_runs ON selected_runs.id = candidates.backtest_run_id
 		JOIN backtest_runs AS runs ON runs.id = candidates.backtest_run_id
@@ -50,13 +50,20 @@ func (store *Store) ListCandidates(ctx context.Context, filter domain.CandidateF
 	for rows.Next() {
 		var candidate domain.Candidate
 		var engineVersion, checksum pgtype.Text
+		var momentumRank pgtype.Float8
 		if err := rows.Scan(
 			&candidate.ID, &candidate.BacktestRunID, &candidate.StrategyID,
 			&candidate.StrategySlug, &candidate.StrategyVersion, &engineVersion, &checksum,
 			&candidate.AsOf, &candidate.Symbol, &candidate.Rank, &candidate.Weight,
-			&candidate.Score, &candidate.Momentum, &candidate.ClaimSupport,
+			&candidate.Score, &candidate.Momentum, &momentumRank, &candidate.ClaimSupport,
 		); err != nil {
 			return nil, fmt.Errorf("scan candidate: %w", err)
+		}
+		// Null for rows written before momentum-claims-v4, whose score came
+		// straight off the raw trailing return.
+		if momentumRank.Valid {
+			value := momentumRank.Float64
+			candidate.MomentumRank = &value
 		}
 		if engineVersion.Valid {
 			value := engineVersion.String

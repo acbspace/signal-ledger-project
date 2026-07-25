@@ -67,7 +67,7 @@ func TestRunBacktestSendsSignalsAndDecodesCandidates(t *testing.T) {
 			"as_of": "2026-03-02",
 			"positions": [{
 				"symbol": "XLE", "rank": 1, "weight": 0.2, "score": 0.31,
-				"momentum": 0.24, "claim_support": 0.7,
+				"momentum": 0.24, "momentum_rank": -0.34, "claim_support": 0.7,
 				"evidence": [{"claim_id": "claim-1", "contribution": 0.7}]
 			}]
 		}
@@ -93,6 +93,12 @@ func TestRunBacktestSendsSignalsAndDecodesCandidates(t *testing.T) {
 	position := result.Candidates.Positions[0]
 	if position.Symbol != "XLE" || position.Rank != 1 || position.ClaimSupport != 0.7 {
 		t.Fatalf("position = %+v", position)
+	}
+	// Raw momentum and the ranked value the engine actually scored are separate
+	// numbers under momentum-claims-v4, and a stored position needs both to
+	// reproduce its own score.
+	if position.Momentum != 0.24 || position.MomentumRank != -0.34 {
+		t.Fatalf("position lost its momentum decomposition: %+v", position)
 	}
 	if len(position.Evidence) != 1 || position.Evidence[0].ClaimID != "claim-1" {
 		t.Fatalf("evidence = %+v", position.Evidence)

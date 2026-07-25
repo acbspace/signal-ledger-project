@@ -175,8 +175,17 @@ def main() -> None:
     print(f"  {summary['n_rebalances']} rebalances over {summary['n_trading_days']} days, "
           f"{summary['n_claim_signals']} claim signals live in "
           f"{summary['n_claim_supported_rebalances']} of them")
+    # The accounting the numbers came out of. invested_fraction in particular is
+    # what tells a flat curve from a book that was mostly sitting in cash.
+    print(f"  {summary['position_tracking']} positions, {summary['momentum_scale']}-space momentum, "
+          f"fills +{summary['execution_lag_days']}d, cash_policy={summary['cash_policy']}")
+    print(f"  turnover {summary['total_turnover']:.2f}, "
+          f"invested {summary['invested_fraction']:.1%}, "
+          f"{summary['n_stop_loss_exits']} stop-loss exits")
     if summary["n_rebalances"] < 1:
         raise SmokeError("the run never rebalanced; widen the snapshot or shorten lookback_months")
+    if summary["invested_fraction"] <= 0:
+        raise SmokeError("the run never held anything; check max_position_weight against top_n")
 
     step("candidates for this run")
     body = expect(call("GET", f"/v1/candidates?backtest_id={run_id}"), 200, "candidates")
@@ -190,13 +199,20 @@ def main() -> None:
 
     weight = summary["claim_signal_weight"]
     for candidate in candidates:
-        # The documented formula, verifiable from the response alone.
-        expected = candidate["momentum"] + weight * candidate["claim_support"]
+        # The documented formula, verifiable from the response alone. The engine
+        # scores the cross-sectional rank of momentum rather than the raw
+        # trailing return, so `momentum_rank` is the term that enters the sum and
+        # `momentum` stays the return a reviewer can read off a price chart.
+        ranked = candidate.get("momentum_rank")
+        if ranked is None:
+            raise SmokeError(f"{candidate['symbol']} is missing momentum_rank")
+        expected = ranked + weight * candidate["claim_support"]
         if abs(candidate["score"] - expected) > 1e-6:
             raise SmokeError(f"{candidate['symbol']} score {candidate['score']} != {expected}")
         print(f"  #{candidate['rank']} {candidate['symbol']:<6} weight={candidate['weight']:.3f} "
-              f"score={candidate['score']:.4f} = momentum {candidate['momentum']:.4f} "
-              f"+ {weight} x support {candidate['claim_support']:.2f}")
+              f"score={candidate['score']:.4f} = rank {ranked:+.4f} "
+              f"+ {weight} x support {candidate['claim_support']:.2f} "
+              f"(momentum {candidate['momentum']:+.4f})")
         for item in candidate["evidence"]:
             if not item["page_number"] or not item["evidence_quote"]:
                 raise SmokeError(f"{candidate['symbol']} cites a claim with no page evidence")

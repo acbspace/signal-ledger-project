@@ -204,9 +204,9 @@ func candidateSet(claimID string) domain.CandidateSet {
 	return domain.CandidateSet{
 		AsOf: time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC),
 		Positions: []domain.CandidatePosition{
-			{Symbol: "XLE", Rank: 1, Weight: 0.2, Score: 0.31, Momentum: 0.24, ClaimSupport: 0.7,
+			{Symbol: "XLE", Rank: 1, Weight: 0.2, Score: 0.31, Momentum: 0.24, MomentumRank: -0.34, ClaimSupport: 0.7,
 				Evidence: []domain.CandidateEvidence{{ClaimID: claimID, Contribution: 0.7}}},
-			{Symbol: "USO", Rank: 2, Weight: 0.2, Score: 0.12, Momentum: 0.12, ClaimSupport: 0.0},
+			{Symbol: "USO", Rank: 2, Weight: 0.2, Score: 0.12, Momentum: 0.12, MomentumRank: -1.0, ClaimSupport: 0.0},
 		},
 	}
 }
@@ -245,6 +245,11 @@ func TestCompleteBacktestPersistsCandidatesAtomically(t *testing.T) {
 	}
 	if first.EngineVersion == nil || *first.EngineVersion != "momentum-claims-v2" {
 		t.Fatalf("candidate lost its run's engine version: %+v", first)
+	}
+	// Both momentum columns survive the round trip, so a stored position still
+	// reproduces its score: score = momentum_rank + weight * claim_support.
+	if first.MomentumRank == nil || *first.MomentumRank != -0.34 || first.Momentum != 0.24 {
+		t.Fatalf("candidate lost its momentum decomposition: %+v", first)
 	}
 	// The whole point: the position resolves to the page-cited claim.
 	if len(first.Evidence) != 1 || first.Evidence[0].Claim.ID != claimID || first.Evidence[0].Contribution != 0.7 {

@@ -90,6 +90,24 @@ func TestSpecValidateAcceptsValidSpec(t *testing.T) {
 	}
 }
 
+// The engine reads these two, so a spec has to be able to commit them. Keeping
+// filterFields in step with `_engine_params` is what stops a reviewer minting an
+// immutable version whose filter silently does nothing.
+func TestSpecValidateAcceptsTheAccountingFilters(t *testing.T) {
+	t.Parallel()
+
+	for _, filter := range []Filter{
+		{Field: "execution_lag_days", Operator: "eq", Value: float64(1)},
+		{Field: "cash_policy", Operator: "eq", Value: "extend"},
+	} {
+		spec := validSpec()
+		spec.Selection.Filters = append(spec.Selection.Filters, filter)
+		if err := spec.Validate(); err != nil {
+			t.Fatalf("filter %q rejected: %v", filter.Field, err)
+		}
+	}
+}
+
 func TestSpecValidateRejectsInvalidSpecs(t *testing.T) {
 	t.Parallel()
 

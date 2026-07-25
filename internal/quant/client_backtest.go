@@ -132,6 +132,7 @@ type candidatePosition struct {
 	Weight       float64             `json:"weight"`
 	Score        float64             `json:"score"`
 	Momentum     float64             `json:"momentum"`
+	MomentumRank float64             `json:"momentum_rank"`
 	ClaimSupport float64             `json:"claim_support"`
 	Evidence     []candidateEvidence `json:"evidence"`
 }
@@ -170,6 +171,7 @@ func (set candidateSet) decode() (domain.CandidateSet, error) {
 			Weight:       position.Weight,
 			Score:        position.Score,
 			Momentum:     position.Momentum,
+			MomentumRank: position.MomentumRank,
 			ClaimSupport: position.ClaimSupport,
 			Evidence:     evidence,
 		})

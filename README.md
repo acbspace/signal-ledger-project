@@ -152,17 +152,48 @@ proxies), drops anything outside the universe or effective after the run's
 until its horizon expires — so a claim published mid-run moves later rebalances
 and never earlier ones.
 
+The ranking is over each symbol's cross-sectional *rank* of trailing return,
+spread evenly over [-1, 1], not the return itself. Adding a confidence to a
+return would make a claim's real influence depend on how violent the universe
+happened to be; in rank space `claim_signal_weight` means one thing everywhere —
+the fraction of the momentum spread a full-confidence claim is worth. Momentum
+gates still read the raw return, because a committed `momentum > 0.05` meant one.
+
 Tune it with selection filters in the spec, or override per run with `parameters`:
 
-| Filter                  | Default | Effect                                                                        |
-| ----------------------- | ------- | ----------------------------------------------------------------------------- |
-| `claim_confidence`      | `0`     | Minimum confidence for a claim to become a signal                             |
-| `claim_signal_weight`   | `0.1`   | Score added per unit of net confidence (`0.1` ≈ ten points of trailing return) |
-| `claim_horizon_days`    | `90`    | Horizon for claims that did not state one                                     |
-| `require_claim_support` | `false` | Hold only symbols with net-positive support that day                          |
+| Filter                  | Default | Effect                                                                     |
+| ----------------------- | ------- | -------------------------------------------------------------------------- |
+| `claim_confidence`      | `0`     | Minimum confidence for a claim to become a signal                          |
+| `claim_signal_weight`   | `0.25`  | Fraction of the momentum spread one unit of net confidence is worth        |
+| `claim_horizon_days`    | `90`    | Horizon for claims that did not state one                                  |
+| `require_claim_support` | `false` | Hold only symbols with net-positive support that day                       |
+| `execution_lag_days`    | `1`     | Trading days between a decision and the close it fills at                  |
+| `cash_policy`           | `cash`  | `cash` leaves the weight remainder uninvested; `extend` holds enough ranked names to fill the book without breaching the cap |
 
 Every run's summary reports `n_claim_signals`, `n_claim_supported_rebalances`,
 and the applied weight, so you can tell whether research actually moved it.
+
+### What a run charges itself for
+
+`momentum-claims-v4` fixed four places where the simulation's accounting and its
+behaviour disagreed — positions now drift between fills rather than being
+silently rebalanced for free every day, a stop loss pays for its exit, the
+uninvested remainder under a tight `max_position_weight` is reported as
+`invested_fraction` instead of reading as a flat strategy, and no decision fills
+on the bar that produced it. All four made the old numbers flattering; see
+[ADR 0008](docs/decisions/0008-engine-accounting-and-the-v4-version-bump.md).
+
+Checksums do not compare across that boundary, so the previous accounting stays
+reachable for a diff:
+
+```powershell
+$body = @{
+  strategy_id = $id; market_data_snapshot_id = $snapshot
+  document_cutoff_at = "2026-03-01T00:00:00Z"
+  parameters = @{ engine_version = "momentum-claims-v3" }
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post http://localhost:8080/v1/backtests -Body $body -ContentType application/json
+```
 
 ## Candidates
 
@@ -182,7 +213,10 @@ Invoke-RestMethod "http://localhost:8080/v1/candidates?backtest_id=$run"
 ```
 
 Each candidate's `evidence` array resolves a position down to a page number and
-the sentence it was drawn from, with that claim's signed contribution.
+the sentence it was drawn from, with that claim's signed contribution. Its score
+resolves too: `score = momentum_rank + claim_signal_weight * claim_support`,
+where `momentum` stays the raw trailing return to check against a price chart and
+`momentum_rank` is the value that actually entered the ranking.
 
 ## Running locally
 
@@ -286,7 +320,7 @@ All seven milestones of the planned pipeline are complete:
 3. Strategy system: drafts, immutable versions, claim citations. ✅
 4. Market-data adapter and checksummed snapshots (yfinance). ✅
 5. Deterministic daily backtests with no-look-ahead enforcement. ✅
-6. Accepted research claims as point-in-time selection signals (`momentum-claims-v3`). ✅
+6. Accepted research claims as point-in-time selection signals (`momentum-claims-v4`). ✅
 7. Evidence-backed candidate rankings and a paper portfolio. ✅
 
 The authoritative contracts are in [`contracts/`](contracts), the data model in

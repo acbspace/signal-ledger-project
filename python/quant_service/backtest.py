@@ -25,6 +25,40 @@ it reads the snapshot read-only and returns results for Go to persist.
 math only, so the run summary also records the interpreter and polars versions
 that executed it — a result checksum identifies an environment, not just a
 version string.
+
+Accounting
+----------
+
+A simulated book is only worth reading if what it charges matches what it does.
+``momentum-claims-v4`` fixes four places where v3's accounting and its behaviour
+disagreed, and normalizes the research tilt:
+
+* **Positions drift between rebalances.** v3 held target weights constant while
+  prices moved, which is a rebalance to target every single day, yet it charged
+  turnover only on rebalance dates — so the simulation traded daily for free.
+  v4 marks each holding to market and only trades when an order fills.
+* **A stop loss pays for its exit.** v3 zeroed the weight outside the rebalance
+  branch, so the forced sale cost nothing and never entered ``total_turnover``;
+  because the zeroed weight persisted, enabling a stop loss *reduced* reported
+  turnover. v4 sends the exit as an order and charges it like any other.
+* **The weight remainder is explicit.** ``min(1/n, max_position_weight)`` caps a
+  position without redistributing, so any ``max_position_weight < 1/top_n``
+  quietly ran a mostly-uninvested book that looked like a flat strategy. v4 has
+  a ``cash_policy`` and reports ``invested_fraction`` in every summary.
+* **Orders fill after the decision.** v3 read momentum and filled at the same
+  bar, so a strategy needed that day's close to place a trade it filled at that
+  close. v4 defaults ``execution_lag_days`` to 1.
+* **The tilt is normalized.** ``momentum + weight * support`` adds a confidence
+  to a return, so the tilt's real influence drifted with each asset's
+  volatility. v4 ranks momentum cross-sectionally onto [-1, 1] first, which
+  gives ``claim_signal_weight`` one meaning everywhere.
+
+Portfolio-level sums use `math.fsum`, so a result cannot depend on the order a
+dict or set happened to iterate in.
+
+`PREVIOUS_ENGINE_VERSION` stays selectable through the ``engine_version`` run
+parameter so a known strategy can be re-run under both and the curves diffed.
+It reproduces v3 byte-for-byte and is frozen — see `_simulate_constant_weights`.
 """
 
 from __future__ import annotations
@@ -41,19 +75,64 @@ from typing import Any, NamedTuple
 
 import polars as pl
 
-ENGINE_VERSION = "momentum-claims-v3"
+ENGINE_VERSION = "momentum-claims-v4"
+# Reachable through the `engine_version` run parameter, so a run under the
+# current accounting can be diffed against the accounting that preceded it.
+PREVIOUS_ENGINE_VERSION = "momentum-claims-v3"
+
 _TRADING_DAYS_PER_YEAR = 252
 _TRADING_DAYS_PER_MONTH = 21
 
-# A full-confidence claim moves a symbol's score by this much, expressed in the
-# same units as trailing return: 0.1 means "worth ten points of momentum".
-_DEFAULT_SIGNAL_WEIGHT = 0.1
 # How long a claim stays live when it did not state its own horizon.
 _DEFAULT_CLAIM_HORIZON_DAYS = 90
+# A lag exists to stop a decision filling on the bar that produced it. Beyond a
+# week it is no longer modelling execution, so it is almost certainly a mistake.
+_MAX_EXECUTION_LAG_DAYS = 5
 
 
 class BacktestError(ValueError):
     """The backtest cannot be run for the given inputs."""
+
+
+@dataclass(frozen=True)
+class AccountingRules:
+    """The simulation math one ``ENGINE_VERSION`` names.
+
+    Every field here changes reported numbers, which is why they are selected by
+    version rather than set individually: a run states which accounting produced
+    it, instead of a combination of knobs nobody has evaluated together.
+    """
+
+    position_tracking: str
+    charge_stop_loss_exit: bool
+    momentum_scale: str
+    execution_lag_days: int
+    signal_weight: float
+
+
+_ACCOUNTING: dict[str, AccountingRules] = {
+    ENGINE_VERSION: AccountingRules(
+        position_tracking="drift",
+        charge_stop_loss_exit=True,
+        momentum_scale="rank",
+        execution_lag_days=1,
+        # In rank space a full-confidence claim is worth this fraction of the
+        # whole momentum spread. v3's 0.1 meant "ten points of trailing return";
+        # carrying that number over unchanged would have quietly cut research
+        # influence to a twentieth of the ranking, which is the opposite of what
+        # normalizing the tilt is for.
+        signal_weight=0.25,
+    ),
+    PREVIOUS_ENGINE_VERSION: AccountingRules(
+        position_tracking="constant_weights",
+        charge_stop_loss_exit=False,
+        momentum_scale="return",
+        execution_lag_days=0,
+        signal_weight=0.1,
+    ),
+}
+
+_CASH_POLICIES = ("cash", "extend")
 
 
 class ClaimSignal(NamedTuple):
@@ -71,13 +150,42 @@ class ClaimSignal(NamedTuple):
 
 
 class Position(NamedTuple):
-    """One selected symbol at a rebalance, with the inputs that selected it."""
+    """One selected symbol at a rebalance, with the inputs that selected it.
+
+    ``momentum`` is always the raw trailing return, so it stays readable next to
+    a price chart. ``momentum_rank`` is the value that actually entered the
+    ranking, so ``score == momentum_rank + claim_signal_weight * claim_support``
+    holds under either momentum scale and a stored position can be re-derived.
+    """
 
     symbol: str
     weight: float
     score: float
     momentum: float
+    momentum_rank: float
     claim_support: float
+
+
+class Decision(NamedTuple):
+    """A rebalance decided on ``as_of``'s close, with the research behind it."""
+
+    as_of: dt.date
+    positions: list[Position]
+    active_claims: dict[str, list[ClaimSignal]]
+    had_claim_support: bool
+
+
+class Order(NamedTuple):
+    """An instruction decided on one close and filled at ``execute_at``'s close.
+
+    ``kind`` is ``rebalance`` (``weights`` replaces the whole book) or
+    ``stop_exit`` (flatten the single symbol in ``weights``).
+    """
+
+    execute_at: int
+    kind: str
+    weights: dict[str, float]
+    decision: Decision | None
 
 
 @dataclass(frozen=True)
@@ -92,6 +200,10 @@ class EngineParams:
     require_claim_support: bool
     claim_horizon_days: int
     min_claim_confidence: float
+    engine_version: str
+    rules: AccountingRules
+    execution_lag_days: int
+    cash_policy: str
 
 
 def run_backtest(
@@ -114,8 +226,9 @@ def run_backtest(
     panel = load_panel(raw)
     result = simulate(panel, spec, parameters or {}, signals or [])
 
+    engine_version = result["engine_version"]
     summary = dict(result["metrics"])
-    summary["engine_version"] = ENGINE_VERSION
+    summary["engine_version"] = engine_version
     # ENGINE_VERSION names the simulation math; these name the environment that
     # executed it. Floating-point accumulation can move between polars releases
     # under unchanged math, so a result_checksum only identifies a run when the
@@ -136,6 +249,14 @@ def run_backtest(
     summary["n_claim_supported_rebalances"] = result["n_claim_supported_rebalances"]
     summary["claim_signal_weight"] = result["claim_signal_weight"]
     summary["require_claim_support"] = result["require_claim_support"]
+    # The accounting this run was simulated under. `engine_version` alone selects
+    # all of it, but naming each rule means a stored summary explains its own
+    # numbers without a reader having to look up what that version decided.
+    summary["position_tracking"] = result["position_tracking"]
+    summary["momentum_scale"] = result["momentum_scale"]
+    summary["execution_lag_days"] = result["execution_lag_days"]
+    summary["cash_policy"] = result["cash_policy"]
+    summary["n_stop_loss_exits"] = result["n_stop_loss_exits"]
 
     # The worker writes these exact bytes as the run artifact, so the checksum
     # taken here is also the checksum of the stored file.
@@ -144,7 +265,7 @@ def run_backtest(
         "summary": summary,
         "equity_curve_csv": curve,
         "checksum": _result_checksum(curve),
-        "engine_version": ENGINE_VERSION,
+        "engine_version": engine_version,
         # The last rebalance is the paper portfolio this run proposes. It does
         # not enter the checksum: the artifact is the equity curve, and these
         # are a projection of the same simulation for Go to persist.
@@ -192,15 +313,285 @@ def simulate(
     schedule = spec["rebalance"]["schedule"]
     rebalance_set = set(_rebalance_indices(dates, schedule, lookback_days))
 
+    simulator = (
+        _simulate_drift
+        if params.rules.position_tracking == "drift"
+        else _simulate_constant_weights
+    )
+    run = simulator(
+        dates=dates,
+        series=series,
+        symbols=symbols,
+        rebalance_set=rebalance_set,
+        lookback_days=lookback_days,
+        top_n=top_n,
+        params=params,
+        claim_signals=claim_signals,
+    )
+
+    metrics = _metrics(
+        run["equity_curve"], run["daily_returns"], run["total_turnover"], run["invested_fraction"]
+    )
+    return {
+        "equity_curve": run["equity_curve"],
+        "holdings": run["holdings"],
+        "daily_returns": run["daily_returns"],
+        "metrics": metrics,
+        "candidates": run["candidates"],
+        "n_rebalances": run["n_rebalances"],
+        "n_stop_loss_exits": run["n_stop_loss_exits"],
+        "n_trading_days": len(dates),
+        "n_universe_symbols": len(symbols),
+        "n_claim_signals": len(claim_signals),
+        "n_claim_supported_rebalances": run["n_claim_supported_rebalances"],
+        "claim_signal_weight": params.signal_weight,
+        "require_claim_support": params.require_claim_support,
+        "engine_version": params.engine_version,
+        "position_tracking": params.rules.position_tracking,
+        "momentum_scale": params.rules.momentum_scale,
+        "execution_lag_days": params.execution_lag_days,
+        "cash_policy": params.cash_policy,
+    }
+
+
+def _simulate_drift(
+    *,
+    dates: list[dt.date],
+    series: dict[str, list[float | None]],
+    symbols: list[str],
+    rebalance_set: set[int],
+    lookback_days: int,
+    top_n: int,
+    params: EngineParams,
+    claim_signals: list[ClaimSignal],
+) -> dict[str, Any]:
+    """Simulate a book whose positions drift with prices between fills.
+
+    Holdings are carried as market values, so a position's weight moves with its
+    price and turnover is only charged when an order actually fills. Every trade
+    — a scheduled rebalance or a stop-loss exit — is decided on one close and
+    filled ``execution_lag_days`` later, so no decision can use the bar it
+    trades on.
+    """
+
+    cost_rate = params.cost_bps / 10_000
+
+    equity = 1.0
+    cash = 1.0
+    values: dict[str, float] = {}
+    entry_price: dict[str, float] = {}
+    pending: list[Order] = []
+    exit_pending: set[str] = set()
+
+    equity_curve: list[tuple[dt.date, float]] = []
+    daily_returns: list[float] = []
+    holdings_log: list[dict[str, Any]] = []
+    invested: list[float] = []
+    total_turnover = 0.0
+    n_rebalances = 0
+    n_stop_exits = 0
+    n_claim_supported_rebalances = 0
+    invested_from: int | None = None
+    last_rebalance: dict[str, Any] = {"as_of": None, "positions": []}
+
+    for index, day in enumerate(dates):
+        # 1. Mark the book to today's close. A symbol the snapshot cannot price
+        #    today holds its value, which is how v3 treated a missing bar too.
+        if index > 0:
+            previous_equity = equity
+            for symbol in values:
+                previous = series[symbol][index - 1]
+                current = series[symbol][index]
+                if previous is not None and current is not None and previous > 0:
+                    values[symbol] *= current / previous
+            equity = cash + math.fsum(values.values())
+            daily_returns.append(equity / previous_equity - 1 if previous_equity > 0 else 0.0)
+
+        # 2. A stop loss is a standing instruction: it reads today's close and
+        #    sends an order, which fills on the lagged close like any other. One
+        #    exit per position stays in flight, so a position that keeps falling
+        #    is not sold repeatedly.
+        if params.stop_loss is not None:
+            for symbol in list(values):
+                if symbol in exit_pending:
+                    continue
+                current = series[symbol][index]
+                entry = entry_price.get(symbol)
+                if current is not None and entry and (current / entry - 1) <= -params.stop_loss:
+                    pending.append(
+                        Order(index + params.execution_lag_days, "stop_exit", {symbol: 0.0}, None)
+                    )
+                    exit_pending.add(symbol)
+
+        # 3. Today's scheduled decision, taken on data through today's close.
+        #    Only claims already effective today are visible, so a later claim
+        #    can never change an earlier holding.
+        if index in rebalance_set:
+            active_claims = _active_claims(claim_signals, day)
+            claim_scores = _claim_scores(active_claims)
+            positions = _select(series, symbols, index, lookback_days, top_n, params, claim_scores)
+            pending.append(
+                Order(
+                    index + params.execution_lag_days,
+                    "rebalance",
+                    {position.symbol: position.weight for position in positions},
+                    Decision(day, positions, active_claims, bool(claim_scores)),
+                )
+            )
+
+        # 4. Fill everything due at today's close, in the order it was decided.
+        #    Every order carries the same lag, so decision order is fill order:
+        #    an exit decided before a rebalance has already filled by the time
+        #    that rebalance does, and one decided after it — on a drawdown the
+        #    rebalance could not have seen — still gets to act.
+        if pending:
+            due = [order for order in pending if order.execute_at <= index]
+            pending = [order for order in pending if order.execute_at > index]
+            for order in due:
+                if order.kind == "stop_exit":
+                    symbol = next(iter(order.weights))
+                    exit_pending.discard(symbol)
+                    held = values.get(symbol, 0.0)
+                    if held <= 0 or equity <= 0:
+                        continue
+                    cost = cost_rate * held
+                    total_turnover += held / equity
+                    del values[symbol]
+                    entry_price.pop(symbol, None)
+                    cash += held - cost
+                    equity -= cost
+                    n_stop_exits += 1
+                    continue
+
+                equity, cash, values, turnover = _apply_target(
+                    values, cash, equity, order.weights, cost_rate
+                )
+                total_turnover += turnover
+                n_rebalances += 1
+                # Entry prices are the prices actually paid, so a stop loss
+                # measures its drawdown from the fill rather than the decision.
+                entry_price = {
+                    symbol: price
+                    for symbol in values
+                    if (price := series[symbol][index]) is not None
+                }
+                decision = order.decision
+                if decision is not None:
+                    if decision.had_claim_support:
+                        n_claim_supported_rebalances += 1
+                    holdings_log.append(
+                        {
+                            "decided_at": decision.as_of.isoformat(),
+                            "date": day.isoformat(),
+                            "weights": {
+                                position.symbol: round(position.weight, 8)
+                                for position in decision.positions
+                            },
+                            # The research support behind each holding, as of the
+                            # day it was decided.
+                            "claim_support": {
+                                position.symbol: round(position.claim_support, 8)
+                                for position in decision.positions
+                            },
+                        }
+                    )
+                    # The most recent filled rebalance is the paper portfolio the
+                    # run proposes.
+                    last_rebalance = _candidate_set(
+                        decision.as_of, decision.positions, decision.active_claims
+                    )
+                if invested_from is None:
+                    invested_from = index
+
+        # 5. Record how much of the book was actually at risk. Measured from the
+        #    first fill, because the lookback window before it is cash by
+        #    construction and would only dilute the number.
+        if invested_from is not None:
+            invested.append(math.fsum(values.values()) / equity if equity > 0 else 0.0)
+        equity_curve.append((day, equity))
+
+    return {
+        "equity_curve": equity_curve,
+        "holdings": holdings_log,
+        "daily_returns": daily_returns,
+        "candidates": last_rebalance,
+        "total_turnover": total_turnover,
+        "n_rebalances": n_rebalances,
+        "n_stop_loss_exits": n_stop_exits,
+        "n_claim_supported_rebalances": n_claim_supported_rebalances,
+        "invested_fraction": statistics.fmean(invested) if invested else 0.0,
+    }
+
+
+def _apply_target(
+    values: dict[str, float],
+    cash: float,
+    equity: float,
+    target: dict[str, float],
+    cost_rate: float,
+) -> tuple[float, float, dict[str, float], float]:
+    """Trade the book to ``target`` weights, charging the value actually traded.
+
+    Turnover is the traded value as a fraction of equity, so the cost works out
+    to the same ``cost_bps / 10_000 * turnover`` v3 charged — the difference is
+    that the position it is measured against has been marked to market rather
+    than assumed to still sit at its last target.
+    """
+
+    if equity <= 0:
+        return equity, cash, {}, 0.0
+
+    # fsum is exact, so neither the turnover nor the resulting cash can depend on
+    # the order this set happened to iterate in.
+    traded_value = math.fsum(
+        abs(target.get(symbol, 0.0) * equity - values.get(symbol, 0.0))
+        for symbol in set(target) | set(values)
+    )
+    equity_after = equity - cost_rate * traded_value
+    new_values = {symbol: weight * equity_after for symbol, weight in target.items() if weight > 0}
+    return equity_after, equity_after - math.fsum(new_values.values()), new_values, traded_value / equity
+
+
+def _simulate_constant_weights(
+    *,
+    dates: list[dt.date],
+    series: dict[str, list[float | None]],
+    symbols: list[str],
+    rebalance_set: set[int],
+    lookback_days: int,
+    top_n: int,
+    params: EngineParams,
+    claim_signals: list[ClaimSignal],
+) -> dict[str, Any]:
+    """The ``momentum-claims-v3`` accounting, preserved to reproduce prior runs.
+
+    FROZEN. This exists so a strategy that ran under v3 can be re-run and its
+    curve diffed against v4's, which only works while the arithmetic here stays
+    bit-for-bit identical. Do not refactor it, do not share code into it, and do
+    not fix its accounting — the defects are the point. `_simulate_drift` is
+    where corrections go.
+
+    Two of those defects are visible right here: target weights are reapplied to
+    every daily return while turnover is charged only on rebalance dates, and the
+    stop loss zeroes a weight without paying for the sale.
+    """
+
     equity = 1.0
     equity_curve: list[tuple[dt.date, float]] = []
     holdings_log: list[dict[str, Any]] = []
     daily_returns: list[float] = []
+    invested: list[float] = []
     weights: dict[str, float] = {}
-    entry_price: dict[str, float] = {}
+    # v3 recorded whatever the snapshot held on the rebalance bar, including a
+    # missing one. A None entry reads as falsy below, which is how the stop loss
+    # skipped an unpriced position; typing it honestly keeps that visible rather
+    # than asserting a price that was never there.
+    entry_price: dict[str, float | None] = {}
     total_turnover = 0.0
     n_rebalances = 0
+    n_stop_exits = 0
     n_claim_supported_rebalances = 0
+    invested_from: int | None = None
     last_rebalance: dict[str, Any] = {"as_of": None, "positions": []}
 
     for index, day in enumerate(dates):
@@ -219,11 +610,11 @@ def simulate(
                 current = series[symbol][index]
                 entry = entry_price.get(symbol)
                 if current is not None and entry and (current / entry - 1) <= -params.stop_loss:
+                    if weights[symbol] > 0:
+                        n_stop_exits += 1
                     weights[symbol] = 0.0
 
         if index in rebalance_set:
-            # Only claims already effective on this day are visible here, so a
-            # later claim can never change an earlier holding.
             active_claims = _active_claims(claim_signals, day)
             claim_scores = _claim_scores(active_claims)
             if claim_scores:
@@ -241,6 +632,7 @@ def simulate(
             entry_price = {symbol: series[symbol][index] for symbol in weights}
             holdings_log.append(
                 {
+                    "decided_at": day.isoformat(),
                     "date": day.isoformat(),
                     "weights": {symbol: round(weight, 8) for symbol, weight in weights.items()},
                     # The research support behind each holding, as of this day.
@@ -251,23 +643,23 @@ def simulate(
             )
             # The most recent rebalance is the paper portfolio the run proposes.
             last_rebalance = _candidate_set(day, positions, active_claims)
+            if invested_from is None:
+                invested_from = index
 
+        if invested_from is not None:
+            invested.append(sum(weights.values()))
         equity_curve.append((day, equity))
 
-    metrics = _metrics(equity_curve, daily_returns, total_turnover)
     return {
         "equity_curve": equity_curve,
         "holdings": holdings_log,
         "daily_returns": daily_returns,
-        "metrics": metrics,
         "candidates": last_rebalance,
+        "total_turnover": total_turnover,
         "n_rebalances": n_rebalances,
-        "n_trading_days": len(dates),
-        "n_universe_symbols": len(symbols),
-        "n_claim_signals": len(claim_signals),
+        "n_stop_loss_exits": n_stop_exits,
         "n_claim_supported_rebalances": n_claim_supported_rebalances,
-        "claim_signal_weight": params.signal_weight,
-        "require_claim_support": params.require_claim_support,
+        "invested_fraction": statistics.fmean(invested) if invested else 0.0,
     }
 
 
@@ -319,6 +711,10 @@ def _candidate_set(
 ) -> dict[str, Any]:
     """Rank a rebalance's positions and attribute each to the claims behind it.
 
+    ``as_of`` is the day the rebalance was *decided*, not the day it filled: it
+    says which information produced the ranking, which is what pairs it with the
+    run's document cutoff.
+
     ``contribution`` is a claim's own signed confidence. Contributions need not
     sum to ``claim_support``, which is the net clamped to [-1, 1].
     """
@@ -332,6 +728,7 @@ def _candidate_set(
                 "weight": round(position.weight, 8),
                 "score": round(position.score, 8),
                 "momentum": round(position.momentum, 8),
+                "momentum_rank": round(position.momentum_rank, 8),
                 "claim_support": round(position.claim_support, 8),
                 "evidence": [
                     {"claim_id": signal.claim_id, "contribution": round(signal.score, 8)}
@@ -344,13 +741,25 @@ def _candidate_set(
 
 
 def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EngineParams:
+    # The accounting is chosen first, because it supplies the defaults that the
+    # spec and the run parameters then override.
+    engine_version = str(parameters.get("engine_version") or ENGINE_VERSION)
+    rules = _ACCOUNTING.get(engine_version)
+    if rules is None:
+        raise BacktestError(
+            f"unsupported engine_version {engine_version!r}; expected one of "
+            + ", ".join(sorted(_ACCOUNTING))
+        )
+
     lookback_months = 6
     top_n: int | None = None
     gates: list[tuple[str, float]] = []
-    signal_weight = _DEFAULT_SIGNAL_WEIGHT
+    signal_weight = rules.signal_weight
     require_claim_support = False
     claim_horizon_days = _DEFAULT_CLAIM_HORIZON_DAYS
     min_claim_confidence = 0.0
+    execution_lag_days = rules.execution_lag_days
+    cash_policy = "cash"
 
     for filter_spec in spec.get("selection", {}).get("filters", []):
         field = filter_spec.get("field")
@@ -368,6 +777,10 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
             require_claim_support = bool(value)
         elif field == "claim_horizon_days" and operator == "eq":
             claim_horizon_days = int(value)
+        elif field == "execution_lag_days" and operator == "eq":
+            execution_lag_days = int(value)
+        elif field == "cash_policy" and operator == "eq":
+            cash_policy = str(value)
         elif field == "momentum" and operator in {"gt", "gte", "lt", "lte"}:
             gates.append((operator, float(value)))
 
@@ -385,6 +798,10 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
         claim_horizon_days = int(parameters["claim_horizon_days"])
     if "claim_confidence" in parameters:
         min_claim_confidence = float(parameters["claim_confidence"])
+    if "execution_lag_days" in parameters:
+        execution_lag_days = int(parameters["execution_lag_days"])
+    if "cash_policy" in parameters:
+        cash_policy = str(parameters["cash_policy"])
 
     if lookback_months < 1:
         raise BacktestError("lookback_months must be >= 1")
@@ -396,6 +813,25 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
         raise BacktestError("claim_horizon_days must be >= 1")
     if not 0.0 <= min_claim_confidence <= 1.0:
         raise BacktestError("claim_confidence must be in [0, 1]")
+    if not 0 <= execution_lag_days <= _MAX_EXECUTION_LAG_DAYS:
+        raise BacktestError(f"execution_lag_days must be in [0, {_MAX_EXECUTION_LAG_DAYS}]")
+    if cash_policy not in _CASH_POLICIES:
+        raise BacktestError("cash_policy must be one of " + ", ".join(_CASH_POLICIES))
+
+    # The previous accounting is kept to reproduce runs made under it, so it
+    # accepts only the configuration it could actually have run. Silently
+    # applying a v4 knob to it would produce a curve that never existed.
+    if engine_version != ENGINE_VERSION:
+        if execution_lag_days != rules.execution_lag_days:
+            raise BacktestError(
+                f"execution_lag_days requires engine_version {ENGINE_VERSION!r}; "
+                f"{engine_version!r} filled at the deciding bar"
+            )
+        if cash_policy != "cash":
+            raise BacktestError(
+                f"cash_policy requires engine_version {ENGINE_VERSION!r}; "
+                f"{engine_version!r} always left the weight remainder in cash"
+            )
 
     risk = spec["risk"]
     return EngineParams(
@@ -409,6 +845,10 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
         require_claim_support=require_claim_support,
         claim_horizon_days=claim_horizon_days,
         min_claim_confidence=min_claim_confidence,
+        engine_version=engine_version,
+        rules=rules,
+        execution_lag_days=execution_lag_days,
+        cash_policy=cash_policy,
     )
 
 
@@ -529,30 +969,102 @@ def _select(
     params: EngineParams,
     claim_scores: dict[str, float],
 ) -> list[Position]:
-    scored: list[tuple[str, float, float, float]] = []
+    eligible: list[tuple[str, float, float]] = []
     for symbol in symbols:
         current = series[symbol][index]
         past = series[symbol][index - lookback_days] if index - lookback_days >= 0 else None
         if current is None or past is None or past <= 0:
             continue
         momentum = current / past - 1
+        # Gates read the raw trailing return, because that is what a reviewer
+        # committing "momentum > 0.05" meant. Only the ranking is normalized.
         if not _passes_gates(momentum, params.gates):
             continue
         support = claim_scores.get(symbol, 0.0)
         if params.require_claim_support and support <= 0:
             continue
-        scored.append((symbol, momentum + params.signal_weight * support, momentum, support))
+        eligible.append((symbol, momentum, support))
 
+    if not eligible:
+        return []
+
+    if params.rules.momentum_scale == "rank":
+        ranked = _momentum_ranks(eligible)
+    else:
+        ranked = {symbol: momentum for symbol, momentum, _ in eligible}
+
+    scored = [
+        (symbol, ranked[symbol] + params.signal_weight * support, momentum, ranked[symbol], support)
+        for symbol, momentum, support in eligible
+    ]
     # Score descending, then symbol ascending so ties are deterministic.
     scored.sort(key=lambda item: (-item[1], item[0]))
-    chosen = scored[:top_n]
+
+    chosen = scored[: _position_count(len(scored), top_n, params)]
     if not chosen:
         return []
     weight = min(1.0 / len(chosen), params.max_weight)
     return [
-        Position(symbol=symbol, weight=weight, score=score, momentum=momentum, claim_support=support)
-        for symbol, score, momentum, support in chosen
+        Position(
+            symbol=symbol,
+            weight=weight,
+            score=score,
+            momentum=momentum,
+            momentum_rank=momentum_rank,
+            claim_support=support,
+        )
+        for symbol, score, momentum, momentum_rank, support in chosen
     ]
+
+
+def _momentum_ranks(eligible: list[tuple[str, float, float]]) -> dict[str, float]:
+    """Spread trailing returns evenly over [-1, 1] by cross-sectional rank.
+
+    Ranking in return space adds a confidence to a return, so a claim's real
+    influence drifts with each asset's volatility — the same
+    ``claim_signal_weight`` reorders a quiet universe and does nothing to a
+    violent one. Rank space gives the weight one meaning everywhere: the
+    fraction of the momentum spread a full-confidence claim is worth.
+
+    Tied returns share the average rank, so the tilt cannot turn on symbol names.
+    """
+
+    count = len(eligible)
+    if count == 1:
+        return {eligible[0][0]: 0.0}
+
+    ordered = sorted(eligible, key=lambda item: (item[1], item[0]))
+    ranks: dict[str, float] = {}
+    start = 0
+    while start < count:
+        stop = start + 1
+        while stop < count and ordered[stop][1] == ordered[start][1]:
+            stop += 1
+        shared = 2.0 * ((start + stop - 1) / 2.0) / (count - 1) - 1.0
+        for position in range(start, stop):
+            ranks[ordered[position][0]] = shared
+        start = stop
+    return ranks
+
+
+def _position_count(n_eligible: int, top_n: int, params: EngineParams) -> int:
+    """How many names to hold, given the cap and the cash policy.
+
+    ``min(1/n, max_position_weight)`` caps a position without redistributing, so
+    a ``max_position_weight`` below ``1/top_n`` leaves the rest of the book in
+    cash. Under ``cash`` that is the answer and ``invested_fraction`` reports it.
+    Under ``extend`` the cap decides the count instead: hold as many ranked names
+    as being fully invested requires, which respects the cap rather than
+    quietly breaching it. An eligible set too small to fill the book still runs
+    partly in cash — that is the universe's doing, and the summary says so.
+    """
+
+    count = min(n_eligible, top_n)
+    if params.cash_policy != "extend" or count == 0:
+        return count
+    # Guarded against float noise: 1/0.2 must give 5 names, not 6.
+    needed = math.ceil(1.0 / params.max_weight - 1e-9)
+    return min(n_eligible, max(count, needed))
 
 
 def _passes_gates(momentum: float, gates: list[tuple[str, float]]) -> bool:
@@ -572,6 +1084,7 @@ def _metrics(
     equity_curve: list[tuple[dt.date, float]],
     daily_returns: list[float],
     total_turnover: float,
+    invested_fraction: float,
 ) -> dict[str, float]:
     final_equity = equity_curve[-1][1] if equity_curve else 1.0
     total_return = final_equity - 1.0
@@ -605,6 +1118,10 @@ def _metrics(
         "sharpe": round(sharpe, 6),
         "max_drawdown": round(max_drawdown, 6),
         "total_turnover": round(total_turnover, 6),
+        # Mean share of equity actually held in positions, from the first fill
+        # onward. A cap below 1/top_n runs the rest of the book as cash, which
+        # otherwise looks like a strategy that simply does not move much.
+        "invested_fraction": round(invested_fraction, 6),
     }
 
 

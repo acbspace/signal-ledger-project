@@ -43,40 +43,34 @@ Still open in this area:
 - [x] Trade only the committed `universe.symbols`, verified at the API, in the
       engine, and again before candidates are persisted
       ([ADR 0007](decisions/0007-the-committed-universe-is-the-tradable-set.md)).
-- [ ] Track positions between rebalances. Weights are currently held constant
-      while prices move, which is a daily rebalance to target, but turnover is
-      only charged on rebalance dates — so the simulation trades every day for
-      free. Either track shares, or charge the daily rebalancing.
-- [ ] Charge the stop-loss exit. It sets the weight to zero outside the rebalance
-      branch, so the forced sale pays no cost and never enters `total_turnover`;
-      because the zeroed weight persists, enabling a stop loss currently *reduces*
-      reported turnover.
-- [ ] Handle the weight remainder explicitly. `min(1/n, max_position_weight)` caps
-      each position without redistributing, so any `max_position_weight < 1/top_n`
-      quietly runs a mostly-uninvested book. Add a `cash_policy` and report
-      `invested_fraction` in every summary.
-- [ ] Add `execution_lag_days` (default 1). Momentum and the fill currently read
-      the same bar, so a strategy needs the closing price to place a trade it fills
-      at that close.
-- [ ] Normalize the claim tilt. `momentum + weight * support` adds a confidence to
-      a return, so the tilt's real influence drifts with each asset's volatility.
-      Blend in rank space or z-score momentum cross-sectionally first.
+- [x] Track positions between rebalances, so the simulation stops trading every
+      day for free
+      ([ADR 0008](decisions/0008-engine-accounting-and-the-v4-version-bump.md)).
+- [x] Charge the stop-loss exit, so enabling one stops *reducing* reported
+      turnover (ADR 0008).
+- [x] Handle the weight remainder explicitly: `cash_policy`, and
+      `invested_fraction` in every summary (ADR 0008).
+- [x] Add `execution_lag_days` (default 1), so no decision fills on the bar that
+      produced it (ADR 0008).
+- [x] Normalize the claim tilt by ranking momentum cross-sectionally, so
+      `claim_signal_weight` means one thing regardless of an asset's volatility
+      (ADR 0008).
+- [x] Cover the accounting in tests: turnover, stop-loss cost, invested fraction,
+      and execution lag against hand-computed fixtures, plus the invariants —
+      weights sum to at most 1, no position breaches the cap, turnover is
+      non-negative, equity stays positive, results are stable under signal
+      reordering — across ten configurations (ADR 0008).
 - [ ] Add a `risk_free_rate` parameter (default 0) and name it in the summary, so
       `sharpe` is self-describing.
 - [ ] Validate that a snapshot's date range spans the lookback window plus the test
       period, not just that it covers the universe.
 - [ ] Validate `document_cutoff_at` against the snapshot's range instead of
       accepting any RFC3339 value.
-- [ ] Cover the accounting in tests: turnover, stop-loss cost, invested fraction,
-      execution lag, and metrics against hand-computed fixtures. Property-based
-      tests for the invariants — weights sum to at most 1, turnover is
-      non-negative, equity stays positive, results are stable under signal
-      reordering.
-
-The accounting changes above move simulation math, so they take `ENGINE_VERSION`
-to `momentum-claims-v4` — once, at the end, rather than per fix. Existing
-checksums stop being comparable, so keep the previous path reachable long enough
-to re-run a known strategy and diff the curves, and record the decision in an ADR.
+- [ ] Retire `momentum-claims-v3`. It is kept reachable through the
+      `engine_version` run parameter, with four recorded curve checksums pinning
+      it, so any strategy worth keeping can be re-run under both accountings and
+      the curves diffed. Delete the frozen simulator once that diff has been done
+      for every strategy that matters.
 
 ## Evaluation
 

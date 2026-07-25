@@ -59,7 +59,9 @@
                   "claim_confidence",
                   "claim_signal_weight",
                   "claim_horizon_days",
-                  "require_claim_support"
+                  "require_claim_support",
+                  "execution_lag_days",
+                  "cash_policy"
                 ]
               },
               "operator": { "type": "string", "enum": ["gt", "gte", "lt", "lte", "eq"] },

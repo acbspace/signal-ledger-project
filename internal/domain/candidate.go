@@ -13,12 +13,18 @@ type CandidateSet struct {
 	Positions []CandidatePosition
 }
 
+// CandidatePosition is one ranked position. Momentum is the raw trailing return;
+// MomentumRank is that return's cross-sectional rank, which is the value the
+// engine actually scored. Keeping both means Score stays reproducible from a
+// stored row — Score = MomentumRank + claim_signal_weight * ClaimSupport — while
+// Momentum remains a number a reviewer can check against a price chart.
 type CandidatePosition struct {
 	Symbol       string
 	Rank         int
 	Weight       float64
 	Score        float64
 	Momentum     float64
+	MomentumRank float64
 	ClaimSupport float64
 	Evidence     []CandidateEvidence
 }
@@ -78,8 +84,11 @@ type Candidate struct {
 	Weight          float64
 	Score           float64
 	Momentum        float64
-	ClaimSupport    float64
-	Evidence        []CandidateClaim
+	// Nil for candidates written before momentum-claims-v4, which scored raw
+	// trailing returns and so had no ranked momentum to record.
+	MomentumRank *float64
+	ClaimSupport float64
+	Evidence     []CandidateClaim
 }
 
 type CandidateClaim struct {

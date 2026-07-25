@@ -69,6 +69,7 @@ type candidateResponse struct {
 	Weight          float64                     `json:"weight"`
 	Score           float64                     `json:"score"`
 	Momentum        float64                     `json:"momentum"`
+	MomentumRank    *float64                    `json:"momentum_rank,omitempty"`
 	ClaimSupport    float64                     `json:"claim_support"`
 	AsOf            string                      `json:"as_of"`
 	StrategyID      string                      `json:"strategy_id"`
@@ -116,6 +117,7 @@ func candidateResponseFrom(candidate domain.Candidate) candidateResponse {
 		Weight:          candidate.Weight,
 		Score:           candidate.Score,
 		Momentum:        candidate.Momentum,
+		MomentumRank:    candidate.MomentumRank,
 		ClaimSupport:    candidate.ClaimSupport,
 		AsOf:            candidate.AsOf.Format(time.DateOnly),
 		StrategyID:      candidate.StrategyID,

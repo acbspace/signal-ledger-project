@@ -73,6 +73,8 @@ var filterFields = map[string]bool{
 	"claim_signal_weight":   true,
 	"claim_horizon_days":    true,
 	"require_claim_support": true,
+	"execution_lag_days":    true,
+	"cash_policy":           true,
 }
 
 // UniverseSymbols decodes a committed spec and returns the symbols it authorizes

@@ -64,16 +64,26 @@ everything needed — the service stays stateless and reads the frozen CSV read-
 by storage key. Before simulating it re-hashes the file and refuses to run if the
 checksum does not match, so an altered snapshot can never silently change results.
 
-The engine (`momentum-claims-v3`) ranks the universe by trailing-return momentum
+The engine (`momentum-claims-v4`) ranks the universe by trailing-return momentum
 and tilts that rank by research. The universe is `spec.universe.symbols` and
 nothing else: a snapshot may carry more series than one strategy trades, and
 anything beyond the committed universe is ignored rather than ranked, while a
 universe symbol the snapshot cannot price is an error instead of a silent subset
 (see [ADR 0007](decisions/0007-the-committed-universe-is-the-tradable-set.md)).
 Every rebalance uses only bars at or before that day, so a future bar can never
-change a past holding; ties break on symbol so ordering is total. Equal weights are capped by `max_position_weight`, turnover is
-charged `transaction_cost_bps`, and an optional `stop_loss_pct` exits a position
-to cash until the next rebalance.
+change a past holding; ties break on symbol so ordering is total. Momentum enters
+the score as its cross-sectional rank over [-1, 1] rather than as a raw return,
+so the research tilt's influence does not drift with an asset's volatility.
+
+Positions are carried as market values and drift with prices between fills, and
+every order — a scheduled rebalance or a `stop_loss_pct` exit — is decided on one
+close and filled `execution_lag_days` later, charged `transaction_cost_bps` on
+the value actually traded. Weights are capped by `max_position_weight`; whatever
+that cap leaves over is cash under `cash_policy` and reported as
+`invested_fraction`. All of that is what took the engine from v3 to v4
+([ADR 0008](decisions/0008-engine-accounting-and-the-v4-version-bump.md)); v3
+stays selectable through the `engine_version` run parameter so its curves can be
+diffed against v4's.
 
 Python returns scalar metrics plus the equity curve as CSV, checksummed over
 exactly the bytes the worker then writes under `backtests/`. So `result_checksum`

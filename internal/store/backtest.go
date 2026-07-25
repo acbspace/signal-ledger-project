@@ -176,11 +176,11 @@ func insertCandidates(ctx context.Context, tx pgx.Tx, runID, strategyID string, 
 		var candidateID string
 		err := tx.QueryRow(ctx, `
 			INSERT INTO portfolio_candidates
-				(backtest_run_id, strategy_id, symbol, rank, weight, score, momentum, claim_support, as_of)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				(backtest_run_id, strategy_id, symbol, rank, weight, score, momentum, momentum_rank, claim_support, as_of)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			RETURNING id::text`,
 			runID, strategyID, position.Symbol, position.Rank, position.Weight,
-			position.Score, position.Momentum, position.ClaimSupport, candidates.AsOf,
+			position.Score, position.Momentum, position.MomentumRank, position.ClaimSupport, candidates.AsOf,
 		).Scan(&candidateID)
 		if err != nil {
 			return fmt.Errorf("insert candidate %s: %w", position.Symbol, err)
