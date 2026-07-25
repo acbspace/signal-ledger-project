@@ -35,9 +35,9 @@ func TestDocumentUploadReturnsAccepted(t *testing.T) {
 		result: documents.UploadResult{
 			Created: true,
 			Document: domain.Document{
-				ID:       "f1c57343-769c-4f85-9f27-53790c7c4e8a",
-				Filename: "report.pdf",
-				Status:   "queued",
+				ID:         "f1c57343-769c-4f85-9f27-53790c7c4e8a",
+				Filename:   "report.pdf",
+				Status:     "queued",
 				UploadedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 			},
 			Job: &domain.Job{ID: "0f8fad5b-d9cb-469f-a165-70867728950e"},

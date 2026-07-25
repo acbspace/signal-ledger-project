@@ -21,7 +21,10 @@ The snapshot is the canonical CSV frozen by the Go worker (columns:
 symbol,date,open,high,low,close,adj_close,volume). This process stays stateless:
 it reads the snapshot read-only and returns results for Go to persist.
 
-`ENGINE_VERSION` must change whenever the simulation math changes.
+`ENGINE_VERSION` must change whenever the simulation math changes. It names the
+math only, so the run summary also records the interpreter and polars versions
+that executed it — a result checksum identifies an environment, not just a
+version string.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ import datetime as dt
 import hashlib
 import io
 import math
+import platform
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -112,6 +116,13 @@ def run_backtest(
 
     summary = dict(result["metrics"])
     summary["engine_version"] = ENGINE_VERSION
+    # ENGINE_VERSION names the simulation math; these name the environment that
+    # executed it. Floating-point accumulation can move between polars releases
+    # under unchanged math, so a result_checksum only identifies a run when the
+    # interpreter and the dataframe library are recorded next to it. Both are
+    # pinned by requirements.txt; this is where a stored run says which pins.
+    summary["python_version"] = platform.python_version()
+    summary["polars_version"] = pl.__version__
     summary["document_cutoff_at"] = document_cutoff_at
     summary["n_rebalances"] = result["n_rebalances"]
     summary["n_trading_days"] = result["n_trading_days"]

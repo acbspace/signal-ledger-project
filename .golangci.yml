@@ -1,0 +1,27 @@
+# golangci-lint configuration. The version key selects the config schema, not
+# the linter binary — CI pins the binary.
+version: "2"
+
+linters:
+  # The standard set: errcheck, govet, ineffassign, staticcheck, unused. Left as
+  # the default deliberately — a wider set is worth enabling once the findings it
+  # produces have been read, not before.
+  default: standard
+
+  settings:
+    staticcheck:
+      # golangci-lint's own default list, restated because naming any value
+      # replaces it wholesale rather than adding to it, plus the one exclusion
+      # this repository wants.
+      checks:
+        - all
+        - -ST1000 # package comment on every package
+        - -ST1003 # naming conventions
+        - -ST1016 # consistent receiver names
+        - -ST1020 # comment on exported function
+        - -ST1021 # comment on exported type
+        - -ST1022 # comment on exported variable
+        # QF1001 rewrites `!(c >= '0' && c <= '9')` into its De Morgan form. In
+        # the UUID check the negated range states the intent — "not a hex
+        # digit" — more directly than three disjunctions would.
+        - -QF1001

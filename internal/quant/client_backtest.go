@@ -37,7 +37,7 @@ func (client *Client) RunBacktest(ctx context.Context, request domain.BacktestRe
 	if err != nil {
 		return domain.BacktestResult{}, fmt.Errorf("call quant backtest service: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {

@@ -1,5 +1,6 @@
 import datetime as dt
 import hashlib
+import platform
 
 import polars as pl
 import pytest
@@ -324,6 +325,10 @@ def test_run_backtest_verifies_checksum(tmp_path) -> None:
     # The summary records what research contributed, not just the price metrics.
     assert result["summary"]["n_claim_signals"] == 1
     assert result["summary"]["claim_signal_weight"] == 0.5
+    # ...and the environment that produced the checksum, since the engine version
+    # names the math alone. These are the versions requirements.txt pinned.
+    assert result["summary"]["python_version"] == platform.python_version()
+    assert result["summary"]["polars_version"] == pl.__version__
     # The returned checksum is the checksum of the artifact bytes the worker stores.
     curve = result["equity_curve_csv"]
     assert curve.startswith("date,equity\n")

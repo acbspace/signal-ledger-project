@@ -112,6 +112,12 @@ engine version; the engine re-hashes the frozen snapshot and refuses to run on
 altered bytes. It returns the equity curve as the exact bytes its result checksum
 is taken over, so an identical run reproduces an identical checksum.
 
+The engine version names the simulation math, not the environment that ran it, so
+each summary also records `python_version` and `polars_version` — floating-point
+accumulation can move between library releases under unchanged math. Those
+versions are fixed by a hashed lock (see [Dependencies](#dependencies)), and the
+image refuses to install anything the lock does not pin.
+
 Two independent point-in-time rules hold. A price decision at a rebalance uses
 only bars at or before that day. A research claim counts only from its
 `effective_at` until its horizon expires, and the worker additionally drops any
@@ -212,6 +218,39 @@ python scripts/smoke.py
 It needs network access for market data, which is why CI cannot run it. Repeated
 runs are safe: documents dedupe on their SHA-256 and the strategy slug is
 suffixed.
+
+### Dependencies
+
+Python dependencies are split between intent and resolution:
+`python/requirements.in` carries the bounds the project means, and
+`python/requirements.txt` is the generated lock — every package pinned, every
+wheel hashed, every transitive dependency listed. The image installs it with
+`pip install --require-hashes`, which fails the build rather than silently
+resolving something else.
+
+Regenerate the lock after editing an `.in` file. It resolves inside the same
+`python:3.12-slim` base the image builds on, so the pins match what actually gets
+installed:
+
+```powershell
+sh python/make-lock.sh
+```
+
+Go modules are verified the same way: the Dockerfile's dependency layer copies
+`go.sum` alongside `go.mod` and runs `go mod verify`.
+
+### Linting
+
+CI gates on `gofmt -l`, `go vet`, `golangci-lint`, `govulncheck`, `ruff check`,
+`mypy`, and `pip-audit`, and builds every compose image. To run the two
+containerized ones locally without installing anything:
+
+```powershell
+docker run --rm -v "${PWD}:/src" -w /src golangci/golangci-lint:v2.6.1 golangci-lint run ./...
+```
+
+`ruff` and `mypy` come from the dev lock (`python/requirements-dev.txt`) and read
+their configuration from `python/pyproject.toml`.
 
 ### Store integration tests
 

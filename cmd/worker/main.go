@@ -7,9 +7,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"signalledger/internal/backtests"
 	"signalledger/internal/config"
 	"signalledger/internal/jobs"
-	"signalledger/internal/backtests"
 	"signalledger/internal/marketdata"
 	"signalledger/internal/quant"
 	"signalledger/internal/store"

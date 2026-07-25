@@ -1,0 +1,13 @@
+# Development and CI dependencies. Includes everything in requirements.in so the
+# generated `requirements-dev.txt` is a single self-contained lock.
+-r requirements.in
+
+# Floor is 9.0.3 rather than 8.x: PYSEC-2026-1845 affects pytest before it, and
+# pip-audit runs against this lock in CI.
+pytest>=9.0.3,<10.0
+httpx>=0.27,<1.0
+
+# Linters are pinned like everything else: an unpinned linter turns an unrelated
+# upstream release into a red build on a commit that changed nothing.
+ruff>=0.6,<1.0
+mypy>=1.11,<2.0

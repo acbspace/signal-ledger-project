@@ -100,19 +100,19 @@ func (server server) documents(writer http.ResponseWriter, request *http.Request
 	request.Body = http.MaxBytesReader(writer, request.Body, maxUploadBytes+(1<<20))
 	if err := request.ParseMultipartForm(1 << 20); err != nil {
 		if request.MultipartForm != nil {
-			defer request.MultipartForm.RemoveAll()
+			defer func() { _ = request.MultipartForm.RemoveAll() }()
 		}
 		writeError(writer, uploadParseStatus(err), "invalid_upload", "upload must be a multipart request containing a PDF file")
 		return
 	}
-	defer request.MultipartForm.RemoveAll()
+	defer func() { _ = request.MultipartForm.RemoveAll() }()
 
 	file, header, err := request.FormFile("file")
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, "missing_file", "multipart field 'file' is required")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if header.Filename == "" {
 		writeError(writer, http.StatusBadRequest, "invalid_filename", "uploaded file must have a filename")
 		return

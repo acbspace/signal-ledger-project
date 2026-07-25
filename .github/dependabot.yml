@@ -1,0 +1,33 @@
+version: 2
+
+# Pinning dependencies makes upgrades a deliberate act; without something
+# proposing them, deliberate becomes never. Each of these opens a PR that CI —
+# including govulncheck and pip-audit — has to pass before it can merge.
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  # Dependabot recognizes the requirements.in / requirements.txt pair and
+  # regenerates the lock, hashes included, rather than editing pins by hand.
+  - package-ecosystem: pip
+    directory: "/python"
+    schedule:
+      interval: weekly
+
+  # The base images the two Dockerfiles build on: golang and alpine at the root,
+  # python under /python.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: "/python"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

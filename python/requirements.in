@@ -1,0 +1,17 @@
+# Direct runtime dependencies, with the bounds we intend rather than the
+# versions we resolved. `requirements.txt` next to this file is the generated,
+# fully pinned and hashed lock that the image and CI actually install; see
+# `make-lock.sh` for how to regenerate it after editing this file.
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.0,<3.0
+
+# The engine hashes its own output, so polars is a reproducibility dependency:
+# a floating minor can move floating-point accumulation under a fixed
+# ENGINE_VERSION. Pinned exactly by the lock.
+polars>=1.0,<2.0
+
+PyMuPDF>=1.24,<2.0
+anthropic>=0.92,<1.0
+yfinance>=0.2,<1.0
+pandas>=2.0,<3.0

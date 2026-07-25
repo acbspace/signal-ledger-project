@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   go:
+    name: go — fmt, vet, test
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -34,9 +35,47 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # `gofmt -l` prints names and exits 0, so the names have to be the failure
+      # signal. .gitattributes is what keeps this meaningful: without it a
+      # Windows checkout gets CRLF and every file looks unformatted.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'gofmt would rewrite:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
       - run: go test -race ./...
 
+  go-lint:
+    name: go — golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The pinned upstream image rather than the marketplace action: it is the
+      # same container a developer can run locally, so a finding here reproduces
+      # off the same tag instead of off whatever the action resolved.
+      - name: golangci-lint
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            golangci/golangci-lint:v2.6.1 golangci-lint run ./...
+
+  go-vuln:
+    name: go — govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # The binary is pinned, its vulnerability database is not: that is fetched
+      # at run time, so pinning the scanner does not stale the findings.
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - run: govulncheck ./...
+
   python:
+    name: python — ruff, mypy, pytest
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -47,11 +86,37 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r requirements-dev.txt
+      # --require-hashes fails the install outright if the lock stops being fully
+      # pinned and hashed, so CI cannot quietly test a different dependency set
+      # than the image builds from.
+      - run: python -m pip install --require-hashes -r requirements-dev.txt
+      - run: ruff check .
+      - run: mypy quant_service
       - run: pytest -q
 
+  python-audit:
+    name: python — pip-audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Installed on its own rather than into the locked environment: auditing a
+      # dependency set must not perturb the set being audited.
+      - run: python -m pip install pip-audit==2.10.1
+      - run: pip-audit --require-hashes -r requirements-dev.txt
+
   compose:
+    name: compose — config, build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker compose config
+      # `config` only proves the file parses. Building is what catches a
+      # Dockerfile that no longer installs from the lock, or a go.sum the
+      # dependency layer can no longer verify.
+      - run: docker compose build

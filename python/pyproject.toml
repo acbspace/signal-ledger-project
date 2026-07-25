@@ -1,0 +1,35 @@
+# Tool configuration for the quant service. There is deliberately no [project]
+# table: the service is copied into its image, not built as a distributable
+# package, so its dependencies live in requirements.in and the generated lock.
+
+[tool.ruff]
+# The codebase reads at ~100 columns. Ruff's 88-column default would rewrite
+# nine files for reasons unrelated to what linting is here to catch, so the
+# limit follows the code rather than the other way round.
+line-length = 100
+
+[tool.ruff.lint]
+# Selected explicitly. Ruff's default set can change between releases, and a
+# rule set that moves on its own would turn an unrelated upgrade into a red
+# build — the same failure mode the pinned version exists to prevent.
+select = [
+    "E4", # import formatting
+    "E7", # statement-level pycodestyle errors
+    "E9", # syntax and IO errors
+    "F",  # pyflakes: undefined names, unused imports
+    "I",  # import sorting
+    "UP", # pyupgrade: constructs superseded in 3.12
+    "B",  # bugbear: likely bugs, notably mutable default arguments
+]
+
+[tool.mypy]
+python_version = "3.12"
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+# PyMuPDF (`fitz`) and yfinance ship no type information. Naming them keeps the
+# gap visible; a blanket ignore_missing_imports would silently swallow the next
+# untyped dependency too.
+[[tool.mypy.overrides]]
+module = ["fitz", "yfinance"]
+ignore_missing_imports = true

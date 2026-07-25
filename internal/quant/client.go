@@ -54,7 +54,7 @@ func (client *Client) ExtractClaims(ctx context.Context, document domain.Documen
 	if err != nil {
 		return domain.Extraction{}, fmt.Errorf("call quant extraction service: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
@@ -114,7 +114,7 @@ func (client *Client) FetchMarketData(ctx context.Context, request domain.Market
 	if err != nil {
 		return domain.MarketDataResult{}, fmt.Errorf("call quant market data service: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {

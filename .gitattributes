@@ -1,0 +1,13 @@
+# Line endings are part of the build's reproducibility surface: the engine hashes
+# snapshots byte-for-byte, and the linters that guard the code producing those
+# bytes are byte-sensitive too. Without this, a Windows checkout gets CRLF and
+# `gofmt -l` flags every Go file while CI on Linux sees none of it.
+#
+# `text=auto` lets git detect text and store it as LF; `eol=lf` overrides a
+# developer's `core.autocrlf=true` so the working tree gets LF as well.
+* text=auto eol=lf
+
+# Research PDFs are already detected as binary, but say so explicitly — a
+# mangled sample document would be an obscure extraction failure, not an
+# obvious one.
+*.pdf binary

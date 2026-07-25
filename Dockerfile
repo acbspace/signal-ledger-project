@@ -2,8 +2,12 @@ FROM golang:1.25-alpine AS build
 
 WORKDIR /src
 
-COPY go.mod ./
-RUN go mod download
+# go.sum belongs in the dependency layer with go.mod: without it `go mod download`
+# resolves modules with nothing to check them against, so the build silently
+# accepts whatever the proxy serves. `go mod verify` then re-checks the unpacked
+# cache against those recorded hashes.
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api \

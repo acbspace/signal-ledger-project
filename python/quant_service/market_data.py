@@ -90,7 +90,9 @@ def normalize_bars(records: list[dict[str, Any]]) -> list[Bar]:
 
     bars: list[Bar] = []
     for record in records:
-        prices = [
+        # Annotated rather than inferred: the guard below is what rejects a
+        # missing price, and mypy cannot narrow `Any | None` through `any()`.
+        prices: list[Any] = [
             record.get("open"),
             record.get("high"),
             record.get("low"),
