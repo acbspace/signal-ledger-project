@@ -10,4 +10,4 @@ httpx>=0.27,<1.0
 # Linters are pinned like everything else: an unpinned linter turns an unrelated
 # upstream release into a red build on a commit that changed nothing.
 ruff>=0.6,<1.0
-mypy>=1.11,<2.0
+mypy>=2.3.0,<3.0
