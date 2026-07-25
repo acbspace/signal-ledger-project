@@ -253,6 +253,19 @@ It needs network access for market data, which is why CI cannot run it. Repeated
 runs are safe: documents dedupe on their SHA-256 and the strategy slug is
 suffixed.
 
+### Comparing engine versions
+
+`scripts/engine_diff.py` re-runs a completed backtest under both engine versions
+and prints the metrics side by side. With no argument it picks the newest run;
+both runs reuse its strategy, snapshot and cutoff, so the accounting is the only
+difference.
+
+```powershell
+python scripts/engine_diff.py [backtest_id]
+```
+
+Run it against anything worth keeping before `momentum-claims-v3` is deleted.
+
 ### Dependencies
 
 Python dependencies are split between intent and resolution:

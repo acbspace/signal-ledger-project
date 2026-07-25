@@ -73,11 +73,15 @@ Still open in this area:
       period, not just that it covers the universe.
 - [ ] Validate `document_cutoff_at` against the snapshot's range instead of
       accepting any RFC3339 value.
-- [ ] Retire `momentum-claims-v3`. It is kept reachable through the
-      `engine_version` run parameter, with four recorded curve checksums pinning
-      it, so any strategy worth keeping can be re-run under both accountings and
-      the curves diffed. Delete the frozen simulator once that diff has been done
-      for every strategy that matters.
+- [ ] Retire `momentum-claims-v3`. It stays reachable through the
+      `engine_version` run parameter, pinned by four recorded curve checksums,
+      and `scripts/engine_diff.py` re-runs any completed backtest under both.
+      The first real diff (oil ETF macro draft, 2024-01-02..2026-03-02) came out
+      as expected: turnover 0.66 against 0.40, total return 8.55% against 8.83%,
+      one fewer rebalance because the last decision has no bar left to fill on.
+      The 0.28 points of return are what the free daily rebalancing was worth.
+      Delete the frozen simulator once that diff has been run on every strategy
+      that matters.
 
 ## Evaluation
 

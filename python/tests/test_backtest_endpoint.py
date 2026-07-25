@@ -1,10 +1,9 @@
-"""The backtest endpoint, exercised over HTTP.
+"""HTTP-level tests for the backtest endpoint.
 
-`test_backtest.py` calls the engine directly, which is the right place to check
-simulation math but skips the response model entirely. A field the engine
-computes and `CandidatePosition` does not declare is silently dropped by Pydantic
-rather than raising — it then reaches Go as a zero and is persisted as one. These
-tests exist to make that boundary a thing CI checks.
+test_backtest.py calls the engine directly and never touches the response model.
+Pydantic drops any field CandidatePosition does not declare, without raising, so
+a missing field reaches Go as a zero and gets persisted as one. These tests cover
+that gap.
 """
 
 import datetime as dt
@@ -97,17 +96,15 @@ def test_candidate_response_carries_every_term_of_its_score(tmp_path, monkeypatc
 
     weight = payload["summary"]["claim_signal_weight"]
     for position in positions:
-        # The regression this file exists for: momentum_rank reached the response
-        # as 0 for every position, because the response model did not declare it.
-        # A zero is indistinguishable from a mid-ranked name, so the failure was
-        # silent all the way into the database.
+        # momentum_rank was absent from the response model and arrived as 0 for
+        # every position. A zero looks like a mid-ranked name, so nothing failed.
         assert "momentum_rank" in position, position
         assert position["score"] == round(
             position["momentum_rank"] + weight * position["claim_support"], 8
         ), position
 
-    # The tilt is strong enough to put the worst momentum name on top, so a
-    # dropped rank term would not merely round — it would reverse the ranking.
+    # The tilt puts the worst momentum name on top, so dropping the rank term
+    # reverses the ranking rather than shifting a decimal.
     assert positions[0]["symbol"] == "CCC"
     assert positions[0]["momentum_rank"] == -1.0
     assert positions[0]["momentum"] < 0
@@ -116,9 +113,8 @@ def test_candidate_response_carries_every_term_of_its_score(tmp_path, monkeypatc
 def test_summary_reports_the_accounting_over_the_wire(tmp_path, monkeypatch) -> None:
     payload = _run(tmp_path, monkeypatch)
 
-    # `summary` is a free-form dict on the wire, so these survive by construction
-    # — but they are what a stored run uses to explain its own numbers, and a
-    # silent rename upstream would strand every reader of a persisted summary.
+    # summary is a free-form dict, so no schema protects these names. A stored
+    # run explains its own numbers with them.
     summary = payload["summary"]
     for field in (
         "position_tracking",
@@ -138,8 +134,7 @@ def test_summary_reports_the_accounting_over_the_wire(tmp_path, monkeypatch) -> 
 
 
 def test_previous_engine_is_reachable_over_the_wire(tmp_path, monkeypatch) -> None:
-    # The diff that justifies v4 has to be runnable through the API, not just in
-    # a unit test, or "the previous path stays reachable" is not a real offer.
+    # The v3/v4 diff has to work through the API, not only in a unit test.
     payload = _run(
         tmp_path,
         monkeypatch,
