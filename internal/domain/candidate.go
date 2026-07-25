@@ -31,6 +31,15 @@ type CandidateEvidence struct {
 	Contribution float64
 }
 
+// Symbols lists the symbols the set proposes, in rank order.
+func (set CandidateSet) Symbols() []string {
+	symbols := make([]string, 0, len(set.Positions))
+	for _, position := range set.Positions {
+		symbols = append(symbols, position.Symbol)
+	}
+	return symbols
+}
+
 func (set CandidateSet) Validate() error {
 	if len(set.Positions) == 0 {
 		return nil

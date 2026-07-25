@@ -1,9 +1,68 @@
 package strategies
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestUniverseSymbolsReadsTheCommittedSpec(t *testing.T) {
+	t.Parallel()
+
+	raw := json.RawMessage(`{"universe":{"name":"u","asset_class":"etf","symbols":["IEF","TLT"]}}`)
+
+	symbols, err := UniverseSymbols(raw)
+	if err != nil {
+		t.Fatalf("universe symbols: %v", err)
+	}
+	if len(symbols) != 2 || symbols[0] != "IEF" || symbols[1] != "TLT" {
+		t.Fatalf("symbols = %v", symbols)
+	}
+}
+
+func TestUniverseSymbolsRejectsUnreadableSpec(t *testing.T) {
+	t.Parallel()
+
+	if _, err := UniverseSymbols(json.RawMessage(`not json`)); err == nil {
+		t.Fatal("expected an error for an unreadable spec")
+	}
+}
+
+func TestMissingSymbols(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		required  []string
+		available []string
+		expected  []string
+	}{
+		{"fully covered", []string{"IEF", "TLT"}, []string{"IEF", "SPY", "TLT"}, []string{}},
+		{"one gap", []string{"IEF", "TLT"}, []string{"IEF"}, []string{"TLT"}},
+		{"nothing available", []string{"IEF"}, nil, []string{"IEF"}},
+		{"nothing required", nil, []string{"IEF"}, []string{}},
+		// Order follows `required` so the error message is stable, and a symbol
+		// listed twice is reported once.
+		{"deduplicated", []string{"TLT", "IEF", "TLT"}, []string{"SPY"}, []string{"TLT", "IEF"}},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			missing := MissingSymbols(testCase.required, testCase.available)
+
+			if len(missing) != len(testCase.expected) {
+				t.Fatalf("missing = %v, want %v", missing, testCase.expected)
+			}
+			for index, symbol := range testCase.expected {
+				if missing[index] != symbol {
+					t.Fatalf("missing = %v, want %v", missing, testCase.expected)
+				}
+			}
+		})
+	}
+}
 
 func validSpec() Spec {
 	return Spec{

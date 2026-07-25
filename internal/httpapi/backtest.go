@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"signalledger/internal/domain"
+	"signalledger/internal/strategies"
 )
 
 const maxBacktestBodyBytes int64 = 32 << 10
@@ -51,7 +52,8 @@ func (server server) backtests(writer http.ResponseWriter, request *http.Request
 		return
 	}
 
-	if _, _, err := server.options.Strategies.Get(request.Context(), body.StrategyID); err != nil {
+	strategy, _, err := server.options.Strategies.Get(request.Context(), body.StrategyID)
+	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			writeError(writer, http.StatusNotFound, "strategy_not_found", "strategy was not found")
 			return
@@ -71,6 +73,22 @@ func (server server) backtests(writer http.ResponseWriter, request *http.Request
 	}
 	if snapshot.StorageKey == nil || snapshot.Checksum == nil {
 		writeError(writer, http.StatusConflict, "snapshot_not_ready", "market-data snapshot is not ready yet")
+		return
+	}
+
+	// A snapshot is a shared resource, so pairing one with a strategy it cannot
+	// price is an easy mistake. The engine is the authoritative check — it sees the
+	// frozen CSV's actual columns, while this row records only the symbols that
+	// were *requested* — but failing here turns a job that dies minutes later in
+	// the worker into an answerable error naming the symbols to fetch.
+	universe, err := strategies.UniverseSymbols(strategy.Spec)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "strategy_spec_unreadable", "could not read the strategy spec")
+		return
+	}
+	if missing := strategies.MissingSymbols(universe, snapshot.Symbols); len(missing) > 0 {
+		writeError(writer, http.StatusConflict, "snapshot_universe_mismatch",
+			"market-data snapshot does not cover the strategy universe; missing: "+strings.Join(missing, ", "))
 		return
 	}
 

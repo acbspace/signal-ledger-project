@@ -1,6 +1,7 @@
 package strategies
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -72,6 +73,43 @@ var filterFields = map[string]bool{
 	"claim_signal_weight":   true,
 	"claim_horizon_days":    true,
 	"require_claim_support": true,
+}
+
+// UniverseSymbols decodes a committed spec and returns the symbols it authorizes
+// for trading. Committed specs are stored as JSON, so every consumer that has to
+// check the universe decodes first; keeping that in one place means the API, the
+// worker, and the engine are all asking the same question of the same field.
+func UniverseSymbols(rawSpec json.RawMessage) ([]string, error) {
+	var spec Spec
+	if err := json.Unmarshal(rawSpec, &spec); err != nil {
+		return nil, fmt.Errorf("decode strategy spec: %w", err)
+	}
+	return spec.Universe.Symbols, nil
+}
+
+// MissingSymbols reports which of `required` are absent from `available`, in the
+// order `required` lists them. It answers the two universe questions the pipeline
+// asks — does a snapshot cover the symbols a spec authorizes, and does a proposed
+// ranking stay inside them — so both get the same comparison.
+func MissingSymbols(required, available []string) []string {
+	present := make(map[string]struct{}, len(available))
+	for _, symbol := range available {
+		present[symbol] = struct{}{}
+	}
+
+	missing := []string{}
+	seen := map[string]struct{}{}
+	for _, symbol := range required {
+		if _, ok := present[symbol]; ok {
+			continue
+		}
+		if _, duplicate := seen[symbol]; duplicate {
+			continue
+		}
+		seen[symbol] = struct{}{}
+		missing = append(missing, symbol)
+	}
+	return missing
 }
 
 func (spec Spec) Validate() error {

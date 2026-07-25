@@ -53,19 +53,25 @@ documents.
 
 ## Backtests
 
-`POST /v1/backtests` validates that the strategy exists and the snapshot is ready
-(it has a storage key and checksum), then commits a queued `backtest_runs` row and
-its `run_backtest` job in one transaction.
+`POST /v1/backtests` validates that the strategy exists, that the snapshot is
+ready (it has a storage key and checksum), and that the snapshot's symbols cover
+the strategy's universe — a gap is a `409` naming the missing symbols rather than
+a job that fails later in the worker. It then commits a queued `backtest_runs` row
+and its `run_backtest` job in one transaction.
 
 The worker loads the immutable spec and the snapshot pointer and calls Python with
 everything needed — the service stays stateless and reads the frozen CSV read-only
 by storage key. Before simulating it re-hashes the file and refuses to run if the
 checksum does not match, so an altered snapshot can never silently change results.
 
-The engine (`momentum-claims-v2`) ranks the universe by trailing-return momentum
-and tilts that rank by research. Every rebalance uses only bars at or before that
-day, so a future bar can never change a past holding; ties break on symbol so
-ordering is total. Equal weights are capped by `max_position_weight`, turnover is
+The engine (`momentum-claims-v3`) ranks the universe by trailing-return momentum
+and tilts that rank by research. The universe is `spec.universe.symbols` and
+nothing else: a snapshot may carry more series than one strategy trades, and
+anything beyond the committed universe is ignored rather than ranked, while a
+universe symbol the snapshot cannot price is an error instead of a silent subset
+(see [ADR 0007](decisions/0007-the-committed-universe-is-the-tradable-set.md)).
+Every rebalance uses only bars at or before that day, so a future bar can never
+change a past holding; ties break on symbol so ordering is total. Equal weights are capped by `max_position_weight`, turnover is
 charged `transaction_cost_bps`, and an optional `stop_loss_pct` exits a position
 to cash until the next rebalance.
 

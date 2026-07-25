@@ -77,6 +77,52 @@ def test_backtest_is_deterministic() -> None:
     assert set(first["holdings"][0]["weights"]) == {"AAA", "BBB"}
 
 
+def _panel_with_extra_symbol() -> pl.DataFrame:
+    """The three-symbol panel plus ZZZ, the strongest momentum name in the data."""
+
+    days = _business_days(dt.date(2020, 1, 1), 30)
+    rows = []
+    for index, day in enumerate(days):
+        rows.append({"date": day, "symbol": "AAA", "close": 100.0 + index})
+        rows.append({"date": day, "symbol": "BBB", "close": 100.0 + 0.5 * index})
+        rows.append({"date": day, "symbol": "CCC", "close": 100.0 - 0.3 * index})
+        rows.append({"date": day, "symbol": "ZZZ", "close": 100.0 * (1.05**index)})
+    return pl.DataFrame(rows).with_columns(pl.col("date").cast(pl.Date))
+
+
+def test_engine_trades_only_the_committed_universe() -> None:
+    # A snapshot is a shared resource and may carry series this strategy does not
+    # trade. ZZZ would top the momentum ranking, but no reviewed spec authorized
+    # it and no accepted claim cites it, so it must never be held or proposed.
+    spec = {**SPEC, "universe": {**SPEC["universe"], "symbols": ["AAA", "BBB"]}}
+
+    result = backtest.simulate(_panel_with_extra_symbol(), spec, {})
+
+    for rebalance in result["holdings"]:
+        assert "ZZZ" not in rebalance["weights"], rebalance
+    assert set(result["holdings"][0]["weights"]) == {"AAA", "BBB"}
+    assert [position["symbol"] for position in result["candidates"]["positions"]] == ["AAA", "BBB"]
+    assert result["n_universe_symbols"] == 2
+
+
+def test_snapshot_missing_a_universe_symbol_is_rejected() -> None:
+    # Silently trading the subset that happens to be present would make the result
+    # depend on data availability rather than on the committed spec.
+    spec = {**SPEC, "universe": {**SPEC["universe"], "symbols": ["AAA", "BBB", "MISSING"]}}
+
+    with pytest.raises(backtest.BacktestError, match="MISSING"):
+        backtest.simulate(_panel(), spec, {})
+
+
+def test_universe_must_be_present_and_non_empty() -> None:
+    # This service is an independent HTTP boundary, so it validates rather than
+    # trusting that Go already did.
+    with pytest.raises(backtest.BacktestError):
+        backtest.simulate(_panel(), {**SPEC, "universe": {"name": "U", "asset_class": "equity"}}, {})
+    with pytest.raises(backtest.BacktestError):
+        backtest.simulate(_panel(), {**SPEC, "universe": {**SPEC["universe"], "symbols": []}}, {})
+
+
 def test_point_in_time_no_lookahead() -> None:
     panel = _panel()
     base = backtest.simulate(panel, SPEC, {})
@@ -170,6 +216,21 @@ def test_neutral_and_offsetting_claims_do_not_tilt() -> None:
     assert offsetting["holdings"] == baseline["holdings"]
 
 
+def test_claim_signal_outside_the_universe_is_ignored() -> None:
+    spec = {**SPEC, "universe": {**SPEC["universe"], "symbols": ["AAA", "BBB"]}}
+    baseline = backtest.simulate(_panel_with_extra_symbol(), spec, TILT, [])
+
+    # A claim may legitimately cite something the strategy does not trade; it stays
+    # evidence without becoming a signal, and must not inflate the run's counters.
+    tilted = backtest.simulate(
+        _panel_with_extra_symbol(), spec, TILT, [_signal("ZZZ", "positive", 1.0, "2020-01-01")]
+    )
+
+    assert tilted["holdings"] == baseline["holdings"]
+    assert tilted["n_claim_signals"] == 0
+    assert tilted["n_claim_supported_rebalances"] == 0
+
+
 def test_claim_confidence_filter_gates_weak_claims() -> None:
     panel = _panel()
     baseline = backtest.simulate(panel, SPEC, TILT, [])
@@ -257,7 +318,7 @@ def test_run_backtest_verifies_checksum(tmp_path) -> None:
         parameters=TILT,
         signals=[_signal("CCC", "positive", 1.0, "2020-01-01")],
     )
-    assert result["engine_version"] == "momentum-claims-v2"
+    assert result["engine_version"] == "momentum-claims-v3"
     assert len(result["checksum"]) == 64
     assert result["summary"]["n_rebalances"] >= 1
     # The summary records what research contributed, not just the price metrics.

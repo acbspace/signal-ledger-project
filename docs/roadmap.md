@@ -1,0 +1,145 @@
+# Roadmap
+
+Planned work, roughly in dependency order: the build and the engine first, because
+every measurement downstream depends on both being trustworthy. Completed items
+link to the decision record that explains them.
+
+## Build reproducibility
+
+The engine pins `ENGINE_VERSION` and hashes snapshots byte-for-byte, so the
+toolchain that produces those bytes should be pinned to match.
+
+- [ ] Copy `go.sum` into the Dockerfile's dependency layer so module checksums are
+      verified at build time.
+- [ ] Lock Python dependencies (`uv` or `pip-tools`, fully pinned and hashed) and
+      build from the lock. A floating `polars` can move floating-point results
+      under a fixed engine version.
+- [ ] Drop `openbb` and `openbb-yfinance` from `requirements.txt` — nothing imports
+      them. Add them back with the OpenBB adapter if that adapter lands.
+- [ ] Add `.gitattributes` (`* text=auto eol=lf`, `*.pdf binary`) so `gofmt` and
+      `ruff` agree across platforms. A Windows checkout currently gets CRLF and
+      `gofmt -l` flags every Go file.
+- [ ] Extend CI with `go vet`, `gofmt -l`, `golangci-lint`, `ruff`, `mypy`,
+      `govulncheck`, `pip-audit`, a real `docker compose build`, and Dependabot.
+- [ ] Record `polars_version` and `python_version` in the run summary, so a
+      `result_checksum` identifies an environment rather than just a version string.
+
+## Engine
+
+- [x] Trade only the committed `universe.symbols`, verified at the API, in the
+      engine, and again before candidates are persisted
+      ([ADR 0007](decisions/0007-the-committed-universe-is-the-tradable-set.md)).
+- [ ] Track positions between rebalances. Weights are currently held constant
+      while prices move, which is a daily rebalance to target, but turnover is
+      only charged on rebalance dates — so the simulation trades every day for
+      free. Either track shares, or charge the daily rebalancing.
+- [ ] Charge the stop-loss exit. It sets the weight to zero outside the rebalance
+      branch, so the forced sale pays no cost and never enters `total_turnover`;
+      because the zeroed weight persists, enabling a stop loss currently *reduces*
+      reported turnover.
+- [ ] Handle the weight remainder explicitly. `min(1/n, max_position_weight)` caps
+      each position without redistributing, so any `max_position_weight < 1/top_n`
+      quietly runs a mostly-uninvested book. Add a `cash_policy` and report
+      `invested_fraction` in every summary.
+- [ ] Add `execution_lag_days` (default 1). Momentum and the fill currently read
+      the same bar, so a strategy needs the closing price to place a trade it fills
+      at that close.
+- [ ] Normalize the claim tilt. `momentum + weight * support` adds a confidence to
+      a return, so the tilt's real influence drifts with each asset's volatility.
+      Blend in rank space or z-score momentum cross-sectionally first.
+- [ ] Add a `risk_free_rate` parameter (default 0) and name it in the summary, so
+      `sharpe` is self-describing.
+- [ ] Validate that a snapshot's date range spans the lookback window plus the test
+      period, not just that it covers the universe.
+- [ ] Validate `document_cutoff_at` against the snapshot's range instead of
+      accepting any RFC3339 value.
+- [ ] Cover the accounting in tests: turnover, stop-loss cost, invested fraction,
+      execution lag, and metrics against hand-computed fixtures. Property-based
+      tests for the invariants — weights sum to at most 1, turnover is
+      non-negative, equity stays positive, results are stable under signal
+      reordering.
+
+The accounting changes above move simulation math, so they take `ENGINE_VERSION`
+to `momentum-claims-v4` — once, at the end, rather than per fix. Existing
+checksums stop being comparable, so keep the previous path reachable long enough
+to re-run a known strategy and diff the curves, and record the decision in an ADR.
+
+## Evaluation
+
+- [ ] Compute a buy-and-hold SPY and an equal-weight-universe curve over the same
+      window inside each run, and report alpha, beta, tracking error, and
+      information ratio. A total return with no baseline is not interpretable.
+- [ ] Add `POST /v1/evaluations`: walk-forward over rolling train/test windows,
+      reporting in-sample against out-of-sample decay.
+- [ ] Record every `parameters` override and its result, and report the trial count
+      (or a deflated Sharpe) alongside any headline number. The override exists to
+      re-tune without minting a version, which is worth keeping only if the
+      re-tuning is visible.
+- [ ] Label claims on a few pages of each sample PDF and add a scored harness
+      reporting precision, recall, and F1 per extractor. Run the heuristic in CI;
+      keep the LLM path a manual target. Without this, a prompt change cannot be
+      evaluated.
+- [ ] Check whether stated confidence predicts anything once labelled data exists.
+      It is currently a keyword count in the heuristic and an uncalibrated model
+      judgement in the LLM path, yet it enters the ranking score as a multiplier.
+- [ ] Write down the biases that are not being fixed — survivorship, universe
+      selection from present-day research, provider restatement of `adj_close`,
+      yfinance data quality. A stated limitation is a feature.
+
+## Security
+
+- [ ] Confine the snapshot storage key to the document root. `extractor.py` has a
+      resolver for this; move it somewhere shared so every file-reading path uses
+      it, and test that each one rejects `../`.
+- [ ] Authenticate the API. A static bearer token from the environment checked in
+      middleware is enough for a single user; add tenancy when there is a second.
+- [ ] Authenticate the Go-to-quant boundary with a shared secret, and keep the
+      quant port on the compose network instead of publishing it to the host.
+- [ ] Stop publishing Postgres by default, and generate a password in `.env`
+      instead of shipping `signalledger`.
+- [ ] Rate-limit upload and backtest creation, and set a body size limit on every
+      handler.
+
+## Operability
+
+- [ ] Generate a real request ID when the client sends none, validate any supplied
+      value, and log method, path, status, and duration for every request. The
+      middleware currently returns a placeholder and logs nothing.
+- [ ] Adopt `golang-migrate` with a version table. Compose re-applies every
+      `.up.sql` on each start and relies on `IF NOT EXISTS`, so the `.down.sql`
+      files are unused and the first non-idempotent migration breaks startup.
+- [ ] Fence job leases with an epoch, and heartbeat long-running jobs. An
+      extraction that outlives its lease is re-leased while still running, so both
+      workers call the LLM and the first one's completion fails.
+- [ ] Add idempotency keys to `POST /v1/backtests` and
+      `POST /v1/market-data/snapshots`.
+- [ ] Paginate `GET /v1/strategies` and `GET /v1/documents/{id}/claims`.
+- [ ] Add `GET /v1/jobs?state=failed` and `POST /v1/jobs/{id}/retry`, so a
+      dead-lettered extraction is visible without querying Postgres.
+- [ ] Add `/metrics`, tracing across the Go-to-Python boundary, and a `/readyz`
+      that checks Postgres and the quant service.
+- [ ] Make the connection pool size and a statement timeout configurable, and add
+      a per-request context deadline.
+- [ ] Fetch market data concurrently with retry and backoff, report per-symbol
+      partial failure, and handle exchange timezones explicitly. One failed symbol
+      currently fails the whole snapshot.
+- [ ] Raise coverage where it is thinnest: `internal/jobs` (lease, retry, and
+      terminal-failure paths against a fake store), `internal/domain` validation,
+      and the `internal/store` integration suite runnable locally via
+      Testcontainers rather than only in CI.
+- [ ] Publish an OpenAPI 3.1 document for the Go API and generate the client
+      `scripts/smoke.py` uses.
+
+## Review interface
+
+Claim review is the one step that requires a human, and it currently happens
+through `PATCH /v1/claims/{id}` by hand.
+
+- [ ] Build the review UI: PDF on the left, extracted claims on the right, each
+      claim scrolling the page to its evidence quote, accept and reject on the
+      keyboard, then draft, commit, snapshot, backtest, and the candidate table
+      with drill-down to the citing page.
+- [ ] Add a diff view for strategy versions, since versions are immutable and
+      comparing them is the natural review action.
+- [ ] Compare two runs side by side: equity curves, benchmark, and the claim
+      attribution that differed.

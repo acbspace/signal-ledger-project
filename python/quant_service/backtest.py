@@ -7,6 +7,12 @@ before that day, and a claim only counts from its ``effective_at`` until its
 horizon expires. The Go worker additionally drops any claim effective after the
 run's document cutoff, so the engine never even receives future research.
 
+The tradable set is ``spec["universe"]["symbols"]`` and nothing else. A snapshot
+may legitimately carry more series than one strategy trades — snapshots are
+shared resources — but a symbol the committed spec never authorized has no
+reviewed research behind it, so it must not be rankable and must not become a
+candidate. The snapshot must cover the universe; extra columns are ignored.
+
 Given the same frozen snapshot, spec, and signals it produces byte-identical
 results, so `run_backtest` verifies the snapshot checksum before simulating and
 hashes the equity curve as the result checksum.
@@ -31,7 +37,7 @@ from typing import Any, NamedTuple
 
 import polars as pl
 
-ENGINE_VERSION = "momentum-claims-v2"
+ENGINE_VERSION = "momentum-claims-v3"
 _TRADING_DAYS_PER_YEAR = 252
 _TRADING_DAYS_PER_MONTH = 21
 
@@ -109,6 +115,9 @@ def run_backtest(
     summary["document_cutoff_at"] = document_cutoff_at
     summary["n_rebalances"] = result["n_rebalances"]
     summary["n_trading_days"] = result["n_trading_days"]
+    # How many symbols the committed spec authorized and the snapshot could
+    # price. Anything the snapshot carried beyond the universe was ignored.
+    summary["n_universe_symbols"] = result["n_universe_symbols"]
     # Enough to tell whether research actually moved this run, without reopening
     # the artifact: how many signals were supplied, how many rebalances saw one
     # live, and the weight they were applied at.
@@ -155,11 +164,17 @@ def simulate(
 ) -> dict[str, Any]:
     params = _engine_params(spec, parameters)
     lookback_days = params.lookback_months * _TRADING_DAYS_PER_MONTH
-    claim_signals = _normalize_signals(signals or [], params.claim_horizon_days, params.min_claim_confidence)
+    # The committed spec decides what may be traded, not whatever the snapshot
+    # happens to contain.
+    universe = _universe_symbols(spec)
+    claim_signals = _normalize_signals(
+        signals or [], params.claim_horizon_days, params.min_claim_confidence, universe
+    )
 
     wide = panel.pivot(values="close", index="date", on="symbol").sort("date")
     dates: list[dt.date] = wide.get_column("date").to_list()
-    symbols = sorted(column for column in wide.columns if column != "date")
+    _require_universe_coverage(universe, wide.columns)
+    symbols = universe
     series = {symbol: wide.get_column(symbol).to_list() for symbol in symbols}
     top_n = params.top_n if params.top_n is not None else min(3, len(symbols))
 
@@ -237,11 +252,53 @@ def simulate(
         "candidates": last_rebalance,
         "n_rebalances": n_rebalances,
         "n_trading_days": len(dates),
+        "n_universe_symbols": len(symbols),
         "n_claim_signals": len(claim_signals),
         "n_claim_supported_rebalances": n_claim_supported_rebalances,
         "claim_signal_weight": params.signal_weight,
         "require_claim_support": params.require_claim_support,
     }
+
+
+def _universe_symbols(spec: dict[str, Any]) -> list[str]:
+    """The symbols the committed spec authorizes this strategy to trade.
+
+    Validated here rather than trusted, because this service is an independent
+    HTTP boundary: it must not rank a symbol just because a caller managed to get
+    it into the snapshot. Returned sorted and deduplicated so the ranking order
+    cannot depend on how the spec happened to list them.
+    """
+
+    universe = spec.get("universe")
+    if not isinstance(universe, dict):
+        raise BacktestError("spec is missing its universe")
+    raw = universe.get("symbols")
+    if not isinstance(raw, list) or not raw:
+        raise BacktestError("spec universe must list at least one symbol")
+
+    symbols: set[str] = set()
+    for item in raw:
+        symbol = str(item).strip()
+        if not symbol:
+            raise BacktestError("spec universe contains an empty symbol")
+        symbols.add(symbol)
+    return sorted(symbols)
+
+
+def _require_universe_coverage(universe: list[str], columns: list[str]) -> None:
+    """Refuse to run when the snapshot cannot price the whole universe.
+
+    Silently trading the subset that happens to be present would make the run's
+    result depend on data availability rather than on the reviewed spec, so a gap
+    is an error the caller has to resolve by fetching the right snapshot.
+    """
+
+    available = {column for column in columns if column != "date"}
+    missing = [symbol for symbol in universe if symbol not in available]
+    if missing:
+        raise BacktestError(
+            "snapshot does not cover the strategy universe; missing: " + ", ".join(missing)
+        )
 
 
 def _candidate_set(
@@ -345,14 +402,24 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
 
 
 def _normalize_signals(
-    raw: list[dict[str, Any]], default_horizon_days: int, min_confidence: float
+    raw: list[dict[str, Any]],
+    default_horizon_days: int,
+    min_confidence: float,
+    universe: list[str],
 ) -> list[ClaimSignal]:
     """Resolve wire signals into date windows, sorted on a total key.
 
     Sorting here rather than trusting the caller's order is what makes the
     floating-point accumulation in `_claim_scores` reproducible.
+
+    A signal for a symbol outside the universe is dropped, not rejected: a claim
+    may legitimately cite something this strategy does not trade, and it stays
+    evidence for the strategy without becoming a trading signal. Dropping it here
+    also keeps ``n_claim_signals`` honest about what could actually have moved
+    the run.
     """
 
+    tradable = set(universe)
     signals: list[ClaimSignal] = []
     for item in raw:
         direction = str(item.get("direction", "neutral"))
@@ -362,6 +429,8 @@ def _normalize_signals(
         symbol = str(item.get("symbol", "")).strip()
         if not symbol:
             raise BacktestError("claim signal is missing a symbol")
+        if symbol not in tradable:
+            continue
         confidence = float(item.get("confidence", 0.0))
         if not 0.0 <= confidence <= 1.0:
             raise BacktestError("claim signal confidence must be in [0, 1]")

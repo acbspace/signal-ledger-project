@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"signalledger/internal/domain"
+	"signalledger/internal/strategies"
 )
 
 func TestBacktestSignalsRestrictsToTheSpecUniverse(t *testing.T) {
@@ -28,7 +29,7 @@ func TestBacktestSignalsRestrictsToTheSpecUniverse(t *testing.T) {
 		{ID: "c", Ticker: &spy, Direction: "positive", Confidence: 0.9, EffectiveAt: cutoff.AddDate(0, 0, 1), ValidationStatus: "accepted"},
 	}
 
-	signals, err := backtestSignals(spec, citations, cutoff)
+	signals, universe, err := backtestSignals(spec, citations, cutoff)
 	if err != nil {
 		t.Fatalf("build signals: %v", err)
 	}
@@ -37,12 +38,50 @@ func TestBacktestSignalsRestrictsToTheSpecUniverse(t *testing.T) {
 	if len(signals) != 1 || signals[0].ClaimID != "a" {
 		t.Fatalf("signals = %+v", signals)
 	}
+	// The caller needs the universe back to check what the engine proposes.
+	if len(universe) != 1 || universe[0] != "SPY" {
+		t.Fatalf("universe = %v", universe)
+	}
 }
 
 func TestBacktestSignalsRejectsUnreadableSpec(t *testing.T) {
 	t.Parallel()
 
-	if _, err := backtestSignals(json.RawMessage(`not json`), nil, time.Now()); err == nil {
+	if _, _, err := backtestSignals(json.RawMessage(`not json`), nil, time.Now()); err == nil {
 		t.Fatal("expected an error for an unreadable spec")
+	}
+}
+
+// The engine is supposed to rank only the committed universe, but the worker is
+// what writes portfolio_candidates — so it verifies the ranking independently
+// rather than trusting the service that produced it.
+func TestCandidateSymbolsOutsideTheUniverseAreDetected(t *testing.T) {
+	t.Parallel()
+
+	universe := []string{"IEF", "TLT"}
+	proposed := domain.CandidateSet{
+		AsOf: time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC),
+		Positions: []domain.CandidatePosition{
+			{Symbol: "TLT", Rank: 1, Weight: 0.5},
+			{Symbol: "ZZZ", Rank: 2, Weight: 0.5},
+		},
+	}
+
+	unauthorized := strategies.MissingSymbols(proposed.Symbols(), universe)
+
+	if len(unauthorized) != 1 || unauthorized[0] != "ZZZ" {
+		t.Fatalf("unauthorized = %v", unauthorized)
+	}
+}
+
+func TestCandidateSymbolsInsideTheUniverseArePermitted(t *testing.T) {
+	t.Parallel()
+
+	proposed := domain.CandidateSet{Positions: []domain.CandidatePosition{
+		{Symbol: "TLT", Rank: 1, Weight: 1.0},
+	}}
+
+	if unauthorized := strategies.MissingSymbols(proposed.Symbols(), []string{"IEF", "TLT"}); len(unauthorized) != 0 {
+		t.Fatalf("unauthorized = %v", unauthorized)
 	}
 }

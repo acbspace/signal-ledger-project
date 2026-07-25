@@ -38,7 +38,8 @@ proposes. Sample GS/BofA research PDFs live in
 ├── contracts               # cross-service JSON schemas
 ├── migrations              # PostgreSQL schema
 ├── docs
-│   └── decisions           # architecture decision records
+│   ├── decisions           # architecture decision records
+│   └── roadmap.md          # planned work
 ├── samples/research        # sample research PDFs
 ├── scripts                 # end-to-end smoke test
 ├── compose.yaml
@@ -97,7 +98,9 @@ clear upgrade path to a dedicated broker.
 6. `POST /v1/market-data/snapshots` freezes the required daily bars to a
    checksummed CSV on the shared volume.
 7. `POST /v1/backtests` runs the frozen snapshot through the momentum engine,
-   tilted by the strategy's cited claims as point-in-time signals.
+   tilted by the strategy's cited claims as point-in-time signals. The engine
+   trades the committed `universe.symbols` and nothing else, so a shared snapshot
+   cannot smuggle an unauthorized symbol into a strategy's portfolio.
 8. `GET /v1/candidates` returns the ranked paper portfolio the run proposed, each
    position carrying its page-cited evidence.
 
@@ -244,10 +247,11 @@ All seven milestones of the planned pipeline are complete:
 3. Strategy system: drafts, immutable versions, claim citations. ✅
 4. Market-data adapter and checksummed snapshots (yfinance). ✅
 5. Deterministic daily backtests with no-look-ahead enforcement. ✅
-6. Accepted research claims as point-in-time selection signals (`momentum-claims-v2`). ✅
+6. Accepted research claims as point-in-time selection signals (`momentum-claims-v3`). ✅
 7. Evidence-backed candidate rankings and a paper portfolio. ✅
 
 The authoritative contracts are in [`contracts/`](contracts), the data model in
 [`migrations/`](migrations), and design decisions in
-[`docs/decisions/`](docs/decisions).
+[`docs/decisions/`](docs/decisions). Planned work is tracked in
+[`docs/roadmap.md`](docs/roadmap.md).
 ```

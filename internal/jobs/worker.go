@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"signalledger/internal/domain"
@@ -219,7 +220,7 @@ func processBacktest(ctx context.Context, logger *slog.Logger, options Options, 
 
 	// The strategy's own cited claims are its research signal. Anything effective
 	// after the run's cutoff is dropped here, before the engine can see it.
-	signals, err := backtestSignals(strategy.Spec, citations, run.DocumentCutoffAt)
+	signals, universe, err := backtestSignals(strategy.Spec, citations, run.DocumentCutoffAt)
 	if err != nil {
 		return failIfTerminal(err)
 	}
@@ -239,6 +240,18 @@ func processBacktest(ctx context.Context, logger *slog.Logger, options Options, 
 	})
 	if err != nil {
 		return failIfTerminal(err)
+	}
+
+	// Last line of defence for the database invariant. A stored candidate is meant
+	// to be answerable — "why do you hold this?" resolves to a cited page — and a
+	// symbol the spec never authorized has no cited research behind it by
+	// definition. Checking here means that even if the engine regresses, an
+	// unauthorized position can never reach portfolio_candidates.
+	if unauthorized := strategies.MissingSymbols(result.Candidates.Symbols(), universe); len(unauthorized) > 0 {
+		return failIfTerminal(fmt.Errorf(
+			"engine proposed candidates outside the strategy universe: %s",
+			strings.Join(unauthorized, ", "),
+		))
 	}
 
 	// The engine checksummed exactly these bytes, so the stored artifact always
@@ -265,12 +278,15 @@ func processBacktest(ctx context.Context, logger *slog.Logger, options Options, 
 // backtestSignals projects the strategy's cited claims onto the symbols its spec
 // actually trades. A claim citing something outside the universe stays evidence
 // for the strategy without becoming a trading signal.
-func backtestSignals(rawSpec json.RawMessage, citations []domain.StoredClaim, cutoff time.Time) ([]domain.ClaimSignal, error) {
-	var spec strategies.Spec
-	if err := json.Unmarshal(rawSpec, &spec); err != nil {
-		return nil, fmt.Errorf("decode strategy spec: %w", err)
+//
+// It also returns that authorized universe, because the caller needs it twice:
+// once to build the signals, and again to verify what the engine proposed.
+func backtestSignals(rawSpec json.RawMessage, citations []domain.StoredClaim, cutoff time.Time) ([]domain.ClaimSignal, []string, error) {
+	universe, err := strategies.UniverseSymbols(rawSpec)
+	if err != nil {
+		return nil, nil, err
 	}
-	return strategies.BuildSignals(citations, spec.Universe.Symbols, cutoff), nil
+	return strategies.BuildSignals(citations, universe, cutoff), universe, nil
 }
 
 func wait(ctx context.Context, duration time.Duration) bool {

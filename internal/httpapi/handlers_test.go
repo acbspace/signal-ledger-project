@@ -18,7 +18,34 @@ const (
 	testDocumentID = "f1c57343-769c-4f85-9f27-53790c7c4e8a"
 	testClaimID    = "0f8fad5b-d9cb-469f-a165-70867728950e"
 	testStrategyID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+	testSnapshotID = "3d594650-3436-4f5a-a2d5-2a9a6d5ea8a1"
 )
+
+type fakeBacktestStore struct {
+	input domain.CreateBacktestInput
+	err   error
+}
+
+func (store *fakeBacktestStore) CreateBacktestWithRunJob(_ context.Context, input domain.CreateBacktestInput) (domain.BacktestRun, domain.Job, error) {
+	store.input = input
+	if store.err != nil {
+		return domain.BacktestRun{}, domain.Job{}, store.err
+	}
+	return domain.BacktestRun{
+		ID:                   testBacktestID,
+		Status:               "queued",
+		StrategyID:           input.StrategyID,
+		MarketDataSnapshotID: input.SnapshotID,
+		DocumentCutoffAt:     input.DocumentCutoffAt,
+	}, domain.Job{ID: testClaimID}, nil
+}
+
+func (store *fakeBacktestStore) GetBacktestRun(_ context.Context, _ string) (domain.BacktestRun, error) {
+	if store.err != nil {
+		return domain.BacktestRun{}, store.err
+	}
+	return domain.BacktestRun{ID: testBacktestID, Status: "queued"}, nil
+}
 
 func storedClaim(status string) domain.StoredClaim {
 	return domain.StoredClaim{
@@ -250,6 +277,68 @@ func TestRequestMarketDataSnapshot(t *testing.T) {
 	}
 	if service.request.Interval != "1d" {
 		t.Fatalf("interval default = %q", service.request.Interval)
+	}
+}
+
+// A snapshot serves whichever strategies need its symbols, so pairing one with a
+// strategy it cannot price is an ordinary mistake. It must not become a queued job
+// that dies in the worker minutes later.
+func TestCreateBacktestRejectsSnapshotMissingUniverseSymbols(t *testing.T) {
+	t.Parallel()
+
+	strategy := testStrategy()
+	strategy.Spec = json.RawMessage(`{"slug":"macro-rates","universe":{"symbols":["IEF","TLT"]}}`)
+	storageKey, checksum := "market-data/snapshot.csv", strings.Repeat("a", 64)
+
+	handler := NewHandler(Options{
+		Strategies: &fakeStrategyService{strategy: strategy},
+		MarketData: &fakeMarketDataService{snapshot: domain.MarketDataSnapshot{
+			ID: testSnapshotID, Symbols: []string{"IEF"},
+			StorageKey: &storageKey, Checksum: &checksum,
+		}},
+		Backtests: &fakeBacktestStore{},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/backtests", strings.NewReader(
+		`{"strategy_id":"`+testStrategyID+`","market_data_snapshot_id":"`+testSnapshotID+
+			`","document_cutoff_at":"2026-02-01T00:00:00Z"}`))
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
+	}
+	// The error has to name the symbol to fetch, or it is not actionable.
+	if !strings.Contains(recorder.Body.String(), "TLT") {
+		t.Fatalf("body does not name the missing symbol: %s", recorder.Body.String())
+	}
+}
+
+func TestCreateBacktestAcceptsSnapshotCoveringTheUniverse(t *testing.T) {
+	t.Parallel()
+
+	strategy := testStrategy()
+	strategy.Spec = json.RawMessage(`{"slug":"macro-rates","universe":{"symbols":["IEF","TLT"]}}`)
+	storageKey, checksum := "market-data/snapshot.csv", strings.Repeat("a", 64)
+
+	handler := NewHandler(Options{
+		Strategies: &fakeStrategyService{strategy: strategy},
+		MarketData: &fakeMarketDataService{snapshot: domain.MarketDataSnapshot{
+			ID: testSnapshotID, Symbols: []string{"IEF", "SPY", "TLT"},
+			StorageKey: &storageKey, Checksum: &checksum,
+		}},
+		Backtests: &fakeBacktestStore{},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/backtests", strings.NewReader(
+		`{"strategy_id":"`+testStrategyID+`","market_data_snapshot_id":"`+testSnapshotID+
+			`","document_cutoff_at":"2026-02-01T00:00:00Z"}`))
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	// A snapshot may carry more than one strategy needs; only gaps are an error.
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 
