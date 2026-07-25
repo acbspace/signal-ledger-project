@@ -31,7 +31,7 @@ jobs:
       # so it must be disposable. They skip when this is unset.
       SIGNALLEDGER_TEST_DATABASE_URL: postgres://signalledger:signalledger@localhost:5432/signalledger_test?sslmode=disable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -52,7 +52,7 @@ jobs:
     name: go — golangci-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The pinned upstream image rather than the marketplace action: it is the
       # same container a developer can run locally, so a finding here reproduces
       # off the same tag instead of off whatever the action resolved.
@@ -65,7 +65,7 @@ jobs:
     name: go — govulncheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -81,7 +81,7 @@ jobs:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -101,7 +101,7 @@ jobs:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -114,7 +114,7 @@ jobs:
     name: compose — config, build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker compose config
       # `config` only proves the file parses. Building is what catches a
       # Dockerfile that no longer installs from the lock, or a go.sum the
