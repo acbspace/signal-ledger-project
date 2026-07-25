@@ -15,7 +15,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
 
-FROM alpine:3.21 AS runtime
+FROM alpine:3.24 AS runtime
 
 # Pre-create the shared data directory owned by the runtime user so a freshly
 # initialized named volume inherits writable ownership.
