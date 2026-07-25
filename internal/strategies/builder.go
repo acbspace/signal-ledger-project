@@ -156,8 +156,13 @@ func macroDraft(themes, symbols []string, claims []domain.StoredClaim) Draft {
 }
 
 // defaultFilters makes the draft's use of research explicit: the minimum
-// confidence a claim needs to become a signal, and how hard that signal tilts
-// the momentum ranking. A reviewer can raise or drop either before committing.
+// confidence a claim needs to become a signal, how hard that signal tilts the
+// momentum ranking, and what happens to the part of the book max_position_weight
+// leaves over. A reviewer can raise or drop any of them before committing.
+//
+// cash_policy is "extend" because the risk cap below is 0.2 and a draft rarely
+// has five names, so "cash" would commit a book that is mostly uninvested and
+// then read as a strategy that does not move much.
 func defaultFilters(claims []domain.StoredClaim) []Filter {
 	minimum := 1.0
 	for _, claim := range claims {
@@ -175,6 +180,11 @@ func defaultFilters(claims []domain.StoredClaim) []Filter {
 			Field:    "claim_signal_weight",
 			Operator: "eq",
 			Value:    defaultSignalWeight,
+		},
+		{
+			Field:    "cash_policy",
+			Operator: "eq",
+			Value:    "extend",
 		},
 	}
 }

@@ -67,7 +67,7 @@ Still open in this area:
       weights sum to at most 1, no position breaches the cap, turnover is
       non-negative, equity stays positive, results are stable under signal
       reordering — across ten configurations (ADR 0008).
-- [ ] Add a `risk_free_rate` parameter (default 0) and name it in the summary, so
+- [x] Add a `risk_free_rate` parameter (default 0) and name it in the summary, so
       `sharpe` is self-describing.
 - [ ] Validate that a snapshot's date range spans the lookback window plus the test
       period, not just that it covers the universe.
@@ -85,9 +85,19 @@ Still open in this area:
 
 ## Evaluation
 
-- [ ] Compute a buy-and-hold SPY and an equal-weight-universe curve over the same
+- [x] Compute a buy-and-hold SPY and an equal-weight-universe curve over the same
       window inside each run, and report alpha, beta, tracking error, and
-      information ratio. A total return with no baseline is not interpretable.
+      information ratio. Both start at the strategy's first fill so the three
+      curves describe the same window. The benchmark symbol is read from the
+      snapshot when it is there and reported as unpriced when it is not; it is
+      never tradable, so ADR 0007 still holds.
+- [ ] Size the draft's risk cap to the universe it drafts. `defaultRisk` commits
+      `max_position_weight` 0.2, and a macro draft is often two names, so the
+      book is 40% invested and `cash_policy: extend` cannot help: there are no
+      further names to extend into. The first benchmarked run showed what that
+      costs — 8.55% against SPY's 26.01% at a beta of 0.20, most of the gap being
+      cash rather than selection. A cap of `max(0.2, 1/len(symbols))` would keep
+      the diversification intent without committing an uninvestable book.
 - [ ] Add `POST /v1/evaluations`: walk-forward over rolling train/test windows,
       reporting in-sample against out-of-sample decay.
 - [ ] Record every `parameters` override and its result, and report the trial count

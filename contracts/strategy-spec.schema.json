@@ -61,7 +61,9 @@
                   "claim_horizon_days",
                   "require_claim_support",
                   "execution_lag_days",
-                  "cash_policy"
+                  "cash_policy",
+                  "risk_free_rate",
+                  "benchmark_symbol"
                 ]
               },
               "operator": { "type": "string", "enum": ["gt", "gte", "lt", "lte", "eq"] },

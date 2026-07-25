@@ -88,6 +88,9 @@ _DEFAULT_CLAIM_HORIZON_DAYS = 90
 # A lag exists to stop a decision filling on the bar that produced it. Beyond a
 # week it is no longer modelling execution, so it is almost certainly a mistake.
 _MAX_EXECUTION_LAG_DAYS = 5
+# Read from the snapshot when it carries this column, ignored when it does not.
+# It is never tradable: only the committed universe is (ADR 0007).
+_DEFAULT_BENCHMARK_SYMBOL = "SPY"
 
 
 class BacktestError(ValueError):
@@ -204,6 +207,8 @@ class EngineParams:
     rules: AccountingRules
     execution_lag_days: int
     cash_policy: str
+    risk_free_rate: float
+    benchmark_symbol: str
 
 
 def run_backtest(
@@ -257,6 +262,12 @@ def run_backtest(
     summary["execution_lag_days"] = result["execution_lag_days"]
     summary["cash_policy"] = result["cash_policy"]
     summary["n_stop_loss_exits"] = result["n_stop_loss_exits"]
+    # What the run is answerable against. `sharpe` and every alpha here are taken
+    # over this rate, so naming it makes them self-describing.
+    summary["risk_free_rate"] = result["risk_free_rate"]
+    summary["benchmark_symbol"] = result["benchmark_symbol"]
+    summary["benchmark_symbol_priced"] = result["benchmark_symbol_priced"]
+    summary["benchmarks"] = result["benchmarks"]
 
     # The worker writes these exact bytes as the run artifact, so the checksum
     # taken here is also the checksum of the stored file.
@@ -330,8 +341,13 @@ def simulate(
     )
 
     metrics = _metrics(
-        run["equity_curve"], run["daily_returns"], run["total_turnover"], run["invested_fraction"]
+        run["equity_curve"],
+        run["daily_returns"],
+        run["total_turnover"],
+        run["invested_fraction"],
+        params.risk_free_rate,
     )
+    benchmark_prices = _benchmark_prices(wide, series, params.benchmark_symbol)
     return {
         "equity_curve": run["equity_curve"],
         "holdings": run["holdings"],
@@ -351,6 +367,22 @@ def simulate(
         "momentum_scale": params.rules.momentum_scale,
         "execution_lag_days": params.execution_lag_days,
         "cash_policy": params.cash_policy,
+        "risk_free_rate": params.risk_free_rate,
+        "benchmark_symbol": params.benchmark_symbol,
+        # Stated rather than inferred from a missing key: a benchmark that was
+        # asked for and could not be priced has to be distinguishable from one
+        # nobody asked for.
+        "benchmark_symbol_priced": benchmark_prices is not None,
+        "benchmarks": _benchmarks(
+            series=series,
+            symbols=symbols,
+            dates=dates,
+            first_fill=run["first_fill"],
+            strategy_returns=run["daily_returns"],
+            benchmark_prices=benchmark_prices,
+            benchmark_symbol=params.benchmark_symbol,
+            risk_free_rate=params.risk_free_rate,
+        ),
     }
 
 
@@ -520,6 +552,7 @@ def _simulate_drift(
         "n_stop_loss_exits": n_stop_exits,
         "n_claim_supported_rebalances": n_claim_supported_rebalances,
         "invested_fraction": statistics.fmean(invested) if invested else 0.0,
+        "first_fill": invested_from,
     }
 
 
@@ -660,6 +693,7 @@ def _simulate_constant_weights(
         "n_stop_loss_exits": n_stop_exits,
         "n_claim_supported_rebalances": n_claim_supported_rebalances,
         "invested_fraction": statistics.fmean(invested) if invested else 0.0,
+        "first_fill": invested_from,
     }
 
 
@@ -760,6 +794,8 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
     min_claim_confidence = 0.0
     execution_lag_days = rules.execution_lag_days
     cash_policy = "cash"
+    risk_free_rate = 0.0
+    benchmark_symbol = _DEFAULT_BENCHMARK_SYMBOL
 
     for filter_spec in spec.get("selection", {}).get("filters", []):
         field = filter_spec.get("field")
@@ -781,6 +817,10 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
             execution_lag_days = int(value)
         elif field == "cash_policy" and operator == "eq":
             cash_policy = str(value)
+        elif field == "risk_free_rate" and operator == "eq":
+            risk_free_rate = float(value)
+        elif field == "benchmark_symbol" and operator == "eq":
+            benchmark_symbol = str(value).strip()
         elif field == "momentum" and operator in {"gt", "gte", "lt", "lte"}:
             gates.append((operator, float(value)))
 
@@ -802,6 +842,10 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
         execution_lag_days = int(parameters["execution_lag_days"])
     if "cash_policy" in parameters:
         cash_policy = str(parameters["cash_policy"])
+    if "risk_free_rate" in parameters:
+        risk_free_rate = float(parameters["risk_free_rate"])
+    if "benchmark_symbol" in parameters:
+        benchmark_symbol = str(parameters["benchmark_symbol"]).strip()
 
     if lookback_months < 1:
         raise BacktestError("lookback_months must be >= 1")
@@ -817,6 +861,10 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
         raise BacktestError(f"execution_lag_days must be in [0, {_MAX_EXECUTION_LAG_DAYS}]")
     if cash_policy not in _CASH_POLICIES:
         raise BacktestError("cash_policy must be one of " + ", ".join(_CASH_POLICIES))
+    # An annual rate as a decimal. Above 1.0 is a percentage that forgot to be
+    # divided, which would silently swamp every excess return it touches.
+    if not 0.0 <= risk_free_rate <= 1.0:
+        raise BacktestError("risk_free_rate must be in [0, 1]")
 
     # The previous accounting is kept to reproduce runs made under it, so it
     # accepts only the configuration it could actually have run. Silently
@@ -849,6 +897,8 @@ def _engine_params(spec: dict[str, Any], parameters: dict[str, Any]) -> EnginePa
         rules=rules,
         execution_lag_days=execution_lag_days,
         cash_policy=cash_policy,
+        risk_free_rate=risk_free_rate,
+        benchmark_symbol=benchmark_symbol,
     )
 
 
@@ -1080,12 +1130,13 @@ def _passes_gates(momentum: float, gates: list[tuple[str, float]]) -> bool:
     return True
 
 
-def _metrics(
+def _curve_metrics(
     equity_curve: list[tuple[dt.date, float]],
     daily_returns: list[float],
-    total_turnover: float,
-    invested_fraction: float,
+    risk_free_rate: float,
 ) -> dict[str, float]:
+    """Scalar metrics for one equity curve, strategy or benchmark."""
+
     final_equity = equity_curve[-1][1] if equity_curve else 1.0
     total_return = final_equity - 1.0
 
@@ -1094,11 +1145,12 @@ def _metrics(
     else:
         cagr = 0.0
 
+    daily_risk_free = risk_free_rate / _TRADING_DAYS_PER_YEAR
     if len(daily_returns) > 1:
         deviation = statistics.stdev(daily_returns)
         volatility = deviation * math.sqrt(_TRADING_DAYS_PER_YEAR)
-        mean_return = statistics.mean(daily_returns)
-        sharpe = (mean_return / deviation * math.sqrt(_TRADING_DAYS_PER_YEAR)) if deviation > 0 else 0.0
+        excess = statistics.fmean(daily_returns) - daily_risk_free
+        sharpe = (excess / deviation * math.sqrt(_TRADING_DAYS_PER_YEAR)) if deviation > 0 else 0.0
     else:
         volatility = 0.0
         sharpe = 0.0
@@ -1117,12 +1169,154 @@ def _metrics(
         "annualized_volatility": round(volatility, 6),
         "sharpe": round(sharpe, 6),
         "max_drawdown": round(max_drawdown, 6),
-        "total_turnover": round(total_turnover, 6),
-        # Mean share of equity actually held in positions, from the first fill
-        # onward. A cap below 1/top_n runs the rest of the book as cash, which
-        # otherwise looks like a strategy that simply does not move much.
-        "invested_fraction": round(invested_fraction, 6),
     }
+
+
+def _metrics(
+    equity_curve: list[tuple[dt.date, float]],
+    daily_returns: list[float],
+    total_turnover: float,
+    invested_fraction: float,
+    risk_free_rate: float,
+) -> dict[str, float]:
+    metrics = _curve_metrics(equity_curve, daily_returns, risk_free_rate)
+    metrics["total_turnover"] = round(total_turnover, 6)
+    # Mean share of equity actually held in positions, from the first fill
+    # onward. A cap below 1/top_n runs the rest of the book as cash, which
+    # otherwise looks like a strategy that simply does not move much.
+    metrics["invested_fraction"] = round(invested_fraction, 6)
+    return metrics
+
+
+def _benchmark_prices(
+    wide: pl.DataFrame, series: dict[str, list[float | None]], symbol: str
+) -> list[float | None] | None:
+    """The benchmark's price column, or None when the snapshot cannot price it.
+
+    Read-only. The benchmark never enters selection or candidates, so ADR 0007's
+    rule that only the committed universe is tradable still holds.
+    """
+
+    if not symbol:
+        return None
+    if symbol in series:
+        return series[symbol]
+    if symbol in wide.columns:
+        return wide.get_column(symbol).cast(pl.Float64).to_list()
+    return None
+
+
+def _buy_and_hold(
+    prices: dict[str, list[float | None]],
+    dates: list[dt.date],
+    first_fill: int | None,
+) -> tuple[list[tuple[dt.date, float]], list[float]]:
+    """Equal-weight buy at `first_fill`, held to the end, no costs.
+
+    Flat at 1.0 until the strategy's own first fill so both series describe the
+    same window; the lookback period before it is cash for the strategy by
+    construction and would otherwise hand the benchmark a free head start.
+    """
+
+    equity = 1.0
+    curve: list[tuple[dt.date, float]] = []
+    returns: list[float] = []
+    held: dict[str, float] = {}
+
+    for index, day in enumerate(dates):
+        if index > 0:
+            previous_equity = equity
+            for symbol in held:
+                previous = prices[symbol][index - 1]
+                current = prices[symbol][index]
+                if previous is not None and current is not None and previous > 0:
+                    held[symbol] *= current / previous
+            if held:
+                equity = math.fsum(held.values())
+            returns.append(equity / previous_equity - 1 if previous_equity > 0 else 0.0)
+
+        if first_fill is not None and index == first_fill:
+            priced = [symbol for symbol in prices if prices[symbol][index] is not None]
+            if priced:
+                held = {symbol: equity / len(priced) for symbol in priced}
+
+        curve.append((day, equity))
+
+    return curve, returns
+
+
+def _relative_metrics(
+    strategy: list[float], benchmark: list[float], risk_free_rate: float
+) -> dict[str, float]:
+    """Alpha, beta, tracking error and information ratio against one benchmark."""
+
+    if len(strategy) != len(benchmark) or len(strategy) < 2:
+        return {}
+
+    daily_risk_free = risk_free_rate / _TRADING_DAYS_PER_YEAR
+    mean_strategy = statistics.fmean(strategy)
+    mean_benchmark = statistics.fmean(benchmark)
+
+    benchmark_variance = statistics.pvariance(benchmark, mu=mean_benchmark)
+    if benchmark_variance > 0:
+        covariance = math.fsum(
+            (a - mean_strategy) * (b - mean_benchmark)
+            for a, b in zip(strategy, benchmark, strict=True)
+        ) / len(strategy)
+        beta = covariance / benchmark_variance
+    else:
+        beta = 0.0
+
+    alpha = (
+        (mean_strategy - daily_risk_free) - beta * (mean_benchmark - daily_risk_free)
+    ) * _TRADING_DAYS_PER_YEAR
+
+    active = [a - b for a, b in zip(strategy, benchmark, strict=True)]
+    deviation = statistics.stdev(active)
+    information_ratio = (
+        statistics.fmean(active) / deviation * math.sqrt(_TRADING_DAYS_PER_YEAR)
+        if deviation > 0
+        else 0.0
+    )
+
+    return {
+        "alpha": round(alpha, 6),
+        "beta": round(beta, 6),
+        "tracking_error": round(deviation * math.sqrt(_TRADING_DAYS_PER_YEAR), 6),
+        "information_ratio": round(information_ratio, 6),
+    }
+
+
+def _benchmarks(
+    *,
+    series: dict[str, list[float | None]],
+    symbols: list[str],
+    dates: list[dt.date],
+    first_fill: int | None,
+    strategy_returns: list[float],
+    benchmark_prices: list[float | None] | None,
+    benchmark_symbol: str,
+    risk_free_rate: float,
+) -> dict[str, dict[str, float]]:
+    """Baselines the run is answerable against.
+
+    A total return with nothing to compare it to says whether the number is
+    positive, not whether the strategy did anything. Equal weight asks what the
+    selection was worth; the benchmark symbol asks what leaving the universe
+    alone was worth.
+    """
+
+    def measure(prices: dict[str, list[float | None]]) -> dict[str, float]:
+        curve, returns = _buy_and_hold(prices, dates, first_fill)
+        return {
+            **_curve_metrics(curve, returns, risk_free_rate),
+            **_relative_metrics(strategy_returns, returns, risk_free_rate),
+        }
+
+    benchmarks = {"equal_weight_universe": measure({symbol: series[symbol] for symbol in symbols})}
+    if benchmark_prices is not None:
+        benchmarks[benchmark_symbol] = measure({benchmark_symbol: benchmark_prices})
+    return benchmarks
 
 
 def equity_curve_csv(result: dict[str, Any]) -> str:

@@ -27,6 +27,7 @@ SAMPLES = Path(__file__).resolve().parent.parent / "samples" / "research"
 PUBLISHED_AT = "2026-01-05T00:00:00Z"
 CUTOFF_AT = "2026-03-01T00:00:00Z"
 START_DATE, END_DATE = "2024-01-02", "2026-03-02"
+BENCHMARK_SYMBOL = "SPY"
 
 
 class SmokeError(RuntimeError):
@@ -141,8 +142,11 @@ def main() -> None:
     print(f"  {strategy['slug']} v{strategy['version']}")
 
     step("snapshot the market data the universe needs")
+    # BENCHMARK_SYMBOL rides along so the engine can price it. It is not in the
+    # universe and never becomes tradable; the engine reads it to report against.
+    symbols = sorted(set(spec["universe"]["symbols"]) | {BENCHMARK_SYMBOL})
     expect(call("POST", "/v1/market-data/snapshots", {
-        "symbols": spec["universe"]["symbols"],
+        "symbols": symbols,
         "start_date": START_DATE,
         "end_date": END_DATE,
     }), 202, "snapshot request")
@@ -152,7 +156,7 @@ def main() -> None:
             item.get("checksum")
             and item["start_date"] == START_DATE
             and item["end_date"] == END_DATE
-            and item["symbols"] == spec["universe"]["symbols"]
+            and item["symbols"] == symbols
         )
 
     snapshots = poll("/v1/market-data/snapshots", lambda body: any(map(is_ours, body["snapshots"])), "snapshot")
@@ -186,6 +190,16 @@ def main() -> None:
         raise SmokeError("the run never rebalanced; widen the snapshot or shorten lookback_months")
     if summary["invested_fraction"] <= 0:
         raise SmokeError("the run never held anything; check max_position_weight against top_n")
+
+    # A total return with nothing to compare it to is not a result.
+    if not summary["benchmark_symbol_priced"]:
+        raise SmokeError(f"{summary['benchmark_symbol']} was not priced; is it in the snapshot?")
+    print(f"  return {summary['total_return']:+.2%} vs "
+          f"rf {summary['risk_free_rate']:.2%}")
+    for name, stats in summary["benchmarks"].items():
+        print(f"    vs {name:<22} {stats['total_return']:+.2%}  "
+              f"alpha {stats['alpha']:+.2%}  beta {stats['beta']:+.2f}  "
+              f"TE {stats['tracking_error']:.2%}  IR {stats['information_ratio']:+.2f}")
 
     step("candidates for this run")
     body = expect(call("GET", f"/v1/candidates?backtest_id={run_id}"), 200, "candidates")

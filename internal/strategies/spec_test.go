@@ -99,6 +99,8 @@ func TestSpecValidateAcceptsTheAccountingFilters(t *testing.T) {
 	for _, filter := range []Filter{
 		{Field: "execution_lag_days", Operator: "eq", Value: float64(1)},
 		{Field: "cash_policy", Operator: "eq", Value: "extend"},
+		{Field: "risk_free_rate", Operator: "eq", Value: 0.04},
+		{Field: "benchmark_symbol", Operator: "eq", Value: "SPY"},
 	} {
 		spec := validSpec()
 		spec.Selection.Filters = append(spec.Selection.Filters, filter)

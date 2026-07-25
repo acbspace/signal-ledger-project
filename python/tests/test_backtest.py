@@ -737,3 +737,90 @@ def test_results_are_stable_under_signal_reordering(name: str, spec: dict, param
     backward = backtest.simulate(panel, spec, parameters, list(reversed(signals)))
 
     assert backtest.equity_curve_csv(forward) == backtest.equity_curve_csv(backward)
+
+
+# ---------------------------------------------------------------------------
+# Benchmarks
+# ---------------------------------------------------------------------------
+
+# One symbol, no cap, no cost, no lag: the strategy buys everything at the first
+# fill and holds, which is exactly what the equal-weight benchmark does. Their
+# return series have to match term for term.
+SOLO_SPEC = {
+    **SPEC,
+    "universe": {"name": "U", "asset_class": "equity", "symbols": ["AAA"]},
+    "risk": {"max_position_weight": 1.0, "transaction_cost_bps": 0},
+}
+
+
+def test_strategy_that_is_the_benchmark_has_no_alpha() -> None:
+    result = backtest.simulate(_panel(), SOLO_SPEC, {"execution_lag_days": 0}, [])
+
+    equal_weight = result["benchmarks"]["equal_weight_universe"]
+    assert equal_weight["total_return"] == result["metrics"]["total_return"]
+    assert equal_weight["beta"] == pytest.approx(1.0)
+    assert equal_weight["alpha"] == pytest.approx(0.0, abs=1e-9)
+    assert equal_weight["tracking_error"] == pytest.approx(0.0, abs=1e-9)
+    assert equal_weight["information_ratio"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_selection_is_measured_against_holding_the_whole_universe() -> None:
+    # CCC falls all run, so dropping it should beat holding all three names.
+    result = backtest.simulate(_panel(), SPEC, {}, [])
+
+    equal_weight = result["benchmarks"]["equal_weight_universe"]
+    assert result["metrics"]["total_return"] > equal_weight["total_return"]
+    assert equal_weight["information_ratio"] > 0
+
+
+def test_benchmark_symbol_is_read_but_never_traded() -> None:
+    # ZZZ tops the momentum ranking and is not in the universe. It has to show up
+    # as a benchmark and stay out of the book (ADR 0007).
+    spec = {**SPEC, "universe": {**SPEC["universe"], "symbols": ["AAA", "BBB"]}}
+
+    result = backtest.simulate(_panel_with_extra_symbol(), spec, {"benchmark_symbol": "ZZZ"}, [])
+
+    assert result["benchmark_symbol_priced"] is True
+    assert "ZZZ" in result["benchmarks"]
+    assert result["benchmarks"]["ZZZ"]["total_return"] > 0
+    for holding in result["holdings"]:
+        assert "ZZZ" not in holding["weights"], holding
+    assert all(position["symbol"] != "ZZZ" for position in result["candidates"]["positions"])
+
+
+def test_an_unpriced_benchmark_says_so_rather_than_vanishing() -> None:
+    result = backtest.simulate(_panel(), SPEC, {"benchmark_symbol": "SPY"}, [])
+
+    assert result["benchmark_symbol"] == "SPY"
+    assert result["benchmark_symbol_priced"] is False
+    assert "SPY" not in result["benchmarks"]
+    # The universe baseline needs no extra data, so it is always there.
+    assert "equal_weight_universe" in result["benchmarks"]
+
+
+def test_risk_free_rate_is_charged_to_sharpe_and_alpha() -> None:
+    free = backtest.simulate(_panel(), SPEC, {}, [])
+    charged = backtest.simulate(_panel(), SPEC, {"risk_free_rate": 0.05}, [])
+
+    assert free["metrics"]["sharpe"] > charged["metrics"]["sharpe"]
+    assert charged["risk_free_rate"] == 0.05
+    # Beta is a covariance ratio, so the rate cannot move it.
+    assert free["benchmarks"]["equal_weight_universe"]["beta"] == pytest.approx(
+        charged["benchmarks"]["equal_weight_universe"]["beta"]
+    )
+
+
+def test_risk_free_rate_is_validated_as_a_decimal() -> None:
+    with pytest.raises(backtest.BacktestError, match="risk_free_rate"):
+        backtest.simulate(_panel(), SPEC, {"risk_free_rate": 5.0}, [])
+    with pytest.raises(backtest.BacktestError, match="risk_free_rate"):
+        backtest.simulate(_panel(), SPEC, {"risk_free_rate": -0.01}, [])
+
+
+def test_benchmarks_do_not_change_the_curve_they_measure() -> None:
+    # Reporting only. If a benchmark could move the equity curve it would change
+    # result_checksum, and ENGINE_VERSION would have to move with it.
+    plain = backtest.simulate(_panel_with_extra_symbol(), SPEC, {}, [])
+    measured = backtest.simulate(_panel_with_extra_symbol(), SPEC, {"benchmark_symbol": "ZZZ"}, [])
+
+    assert backtest.equity_curve_csv(plain) == backtest.equity_curve_csv(measured)

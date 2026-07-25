@@ -169,9 +169,29 @@ Tune it with selection filters in the spec, or override per run with `parameters
 | `require_claim_support` | `false` | Hold only symbols with net-positive support that day                       |
 | `execution_lag_days`    | `1`     | Trading days between a decision and the close it fills at                  |
 | `cash_policy`           | `cash`  | `cash` leaves the weight remainder uninvested; `extend` holds enough ranked names to fill the book without breaching the cap |
+| `risk_free_rate`        | `0`     | Annual rate as a decimal, subtracted before `sharpe` and every alpha       |
+| `benchmark_symbol`      | `SPY`   | Priced from the snapshot when present, never tradable                     |
 
 Every run's summary reports `n_claim_signals`, `n_claim_supported_rebalances`,
 and the applied weight, so you can tell whether research actually moved it.
+
+### What a run is measured against
+
+A total return on its own says whether the number is positive, not whether the
+strategy did anything. Every run computes two baselines over its own window and
+reports `alpha`, `beta`, `tracking_error` and `information_ratio` against each:
+
+- `equal_weight_universe` — hold every symbol the spec authorizes, equally
+  weighted, bought once. This is what the selection has to beat.
+- `benchmark_symbol` (default `SPY`) — buy and hold one series. It has to be in
+  the snapshot to be priced, so add it to the symbols you fetch; the summary
+  reports `benchmark_symbol_priced` rather than quietly leaving the entry out.
+
+Both start flat and buy at the strategy's first fill, so none of them gets a head
+start over the lookback window the strategy spends in cash. The benchmark is read
+and never traded, which keeps
+[ADR 0007](docs/decisions/0007-the-committed-universe-is-the-tradable-set.md)
+intact: only the committed universe is tradable.
 
 ### What a run charges itself for
 

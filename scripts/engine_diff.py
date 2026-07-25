@@ -124,6 +124,15 @@ def main() -> None:
 
     print(f"{'result_checksum':<24}{current['result_checksum'][:16]:>20}{previous['result_checksum'][:16]:>20}")
 
+    for name in sorted(current["summary"].get("benchmarks", {})):
+        left = current["summary"]["benchmarks"][name]
+        right = previous["summary"]["benchmarks"].get(name, {})
+        print(f"\nvs {name}")
+        for field, template in (("alpha", "{:+.4%}"), ("beta", "{:+.3f}"),
+                                ("tracking_error", "{:.4%}"), ("information_ratio", "{:+.3f}")):
+            print(f"  {field:<22}{show(field, left.get(field), template):>20}"
+                  f"{show(field, right.get(field), template):>20}")
+
     if current["result_checksum"] == previous["result_checksum"]:
         raise DiffError("both engines produced the same curve; the version bump changed nothing")
 
